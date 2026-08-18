@@ -15,8 +15,8 @@ typedef struct {
 } Q38Sampler;
 
 void q38_sampler_init(Q38Sampler *sampler, uint64_t seed);
-uint32_t q38_sample(Q38Sampler *sampler, const float *logits,
-                    uint32_t vocabulary_size);
+int q38_sample(Q38Sampler *sampler, const float *logits,
+               uint32_t vocabulary_size, uint32_t *token);
 
 #ifdef __cplusplus
 }

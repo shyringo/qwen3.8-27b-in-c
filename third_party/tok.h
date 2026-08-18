@@ -191,7 +191,10 @@ static void bpe_piece(Tok *tokenizer, const unsigned char *text,
 
     const int whole = hm_get(&tokenizer->vocab, encoded, encoded_length);
     if (whole >= 0) {
-        if (*count < maximum) output[(*count)++] = whole;
+        if (*count < maximum)
+            output[(*count)++] = whole;
+        else
+            tokenizer->failed = 1;
         free(encoded);
         return;
     }
@@ -245,7 +248,11 @@ static void bpe_piece(Tok *tokenizer, const unsigned char *text,
     }
     for (int i = 0; i < symbols; ++i) {
         const int id = hm_get(&tokenizer->vocab, encoded + offsets[i], lengths[i]);
-        if (id >= 0 && *count < maximum) output[(*count)++] = id;
+        if (id < 0 || *count >= maximum) {
+            tokenizer->failed = 1;
+            break;
+        }
+        output[(*count)++] = id;
     }
     free(encoded);
     free(offsets);
@@ -416,7 +423,11 @@ static int tok_encode(Tok *tokenizer, const char *text, int length,
             if (tokenizer->failed) return -1;
         }
         if (hit_position < 0) break;
-        if (count < maximum) output[count++] = hit_id;
+        if (count >= maximum) {
+            tokenizer->failed = 1;
+            return -1;
+        }
+        output[count++] = hit_id;
         at = hit_position + hit_length;
     }
     return count;
@@ -441,8 +452,9 @@ static int tok_decode(const Tok *tokenizer, const int *ids, int count,
         const char *encoded = tokenizer->id2str[id];
         if (tokenizer->id_added[id]) {
             const int length = (int)strlen(encoded);
-            for (int j = 0; j < length && bytes < maximum; ++j)
-                output[bytes++] = encoded[j];
+            if (length > maximum - bytes) return -1;
+            memcpy(output + bytes, encoded, (size_t)length);
+            bytes += length;
             continue;
         }
         const int length = (int)strlen(encoded);
@@ -451,8 +463,9 @@ static int tok_decode(const Tok *tokenizer, const int *ids, int count,
             const int consumed = u8_next((const unsigned char *)encoded,
                                          length, j, &cp);
             j += consumed;
-            if (cp < 1024 && tokenizer->cp2byte[cp] >= 0 && bytes < maximum)
-                output[bytes++] = (char)(unsigned char)tokenizer->cp2byte[cp];
+            if (cp >= 1024 || tokenizer->cp2byte[cp] < 0 || bytes >= maximum)
+                return -1;
+            output[bytes++] = (char)(unsigned char)tokenizer->cp2byte[cp];
         }
     }
     if (bytes < maximum) output[bytes] = '\0';

@@ -9,6 +9,10 @@ The byte-level BPE tokenizer foundation was adapted from
 Fareed Khan and contributors, and is used under the Apache License 2.0. The
 retained implementation is tailored to the Qwen tokenizer stored in GGUF.
 
+The NFC normalization tables in `third_party/tok_nfc_data.h` are generated
+from the Unicode 9.0.0 Character Database. The Unicode data license is
+included in `third_party/UNICODE-LICENSE.txt`.
+
 The Qwen3.8 model graph, GGUF reader, quantized CPU kernels, batching,
 recurrent state management, sampling, command-line runtime and MTP
 verification in this repository are native project code. No external

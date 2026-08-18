@@ -7,10 +7,12 @@ project.
 
 ## Adapted foundations
 
-The byte-level BPE and Unicode-table foundation originated in
+The byte-level BPE and Unicode-category foundation originated in
 [kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c). It was reduced
-to the Qwen GGUF tokenizer path and given explicit allocation-failure handling.
-The retained license notice is recorded in [NOTICE](../NOTICE).
+to the Qwen GGUF tokenizer path and given model-matched Unicode 9.0 NFC
+normalization, strict UTF-8 validation, output-capacity checks and explicit
+allocation-failure handling. The retained license notices are recorded in
+[NOTICE](../NOTICE).
 
 ## Qwen3.8 model support
 
@@ -18,8 +20,8 @@ The retained license notice is recorded in [NOTICE](../NOTICE).
   full-attention layer.
 - Qwen3.8 normalization, convolution, recurrent-state update, gated attention,
   RoPE and dense SwiGLU equations.
-- The 248,320-token GGUF tokenizer, including atomic control and user-defined
-  tokens used by the official chat template.
+- The 248,320-token GGUF tokenizer, including NFC normalization and atomic
+  control and user-defined tokens used by the official chat template.
 - The checkpoint's additional MTP layer, shared embedding and shared output
   projection.
 

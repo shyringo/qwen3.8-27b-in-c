@@ -75,11 +75,23 @@ static void q38_usage(const char *program)
 
 static int q38_u32(const char *text, uint32_t *value)
 {
+    if (!text || !*text || text[0] == '-') return 0;
     char *end = NULL;
     errno = 0;
     const unsigned long parsed = strtoul(text, &end, 10);
-    if (errno || !end || *end || parsed > UINT32_MAX) return 0;
+    if (errno || end == text || *end || parsed > UINT32_MAX) return 0;
     *value = (uint32_t)parsed;
+    return 1;
+}
+
+static int q38_u64(const char *text, uint64_t *value)
+{
+    if (!text || !*text || text[0] == '-') return 0;
+    char *end = NULL;
+    errno = 0;
+    const unsigned long long parsed = strtoull(text, &end, 10);
+    if (errno || end == text || *end) return 0;
+    *value = (uint64_t)parsed;
     return 1;
 }
 
@@ -108,13 +120,13 @@ static int q38_options(int argc, char **argv, Q38Options *options)
         } else if (strcmp(argv[i], "--context") == 0 && i + 1 < argc) {
             if (!q38_u32(argv[++i], &options->context)) return 0;
         } else if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
-            char *end = NULL;
-            options->seed = strtoull(argv[++i], &end, 10);
-            if (!end || *end) return 0;
+            if (!q38_u64(argv[++i], &options->seed)) return 0;
         } else if (strcmp(argv[i], "--temperature") == 0 && i + 1 < argc) {
             char *end = NULL;
-            options->temperature = strtof(argv[++i], &end);
-            if (!end || *end || !isfinite(options->temperature) ||
+            const char *text = argv[++i];
+            errno = 0;
+            options->temperature = strtof(text, &end);
+            if (errno || end == text || *end || !isfinite(options->temperature) ||
                 options->temperature < 0.0f) return 0;
             temperature_set = 1;
         } else if (strcmp(argv[i], "--top-k") == 0 && i + 1 < argc) {
@@ -122,8 +134,10 @@ static int q38_options(int argc, char **argv, Q38Options *options)
                 return 0;
         } else if (strcmp(argv[i], "--top-p") == 0 && i + 1 < argc) {
             char *end = NULL;
-            options->top_p = strtof(argv[++i], &end);
-            if (!end || *end || !isfinite(options->top_p) ||
+            const char *text = argv[++i];
+            errno = 0;
+            options->top_p = strtof(text, &end);
+            if (errno || end == text || *end || !isfinite(options->top_p) ||
                 options->top_p <= 0.0f ||
                 options->top_p > 1.0f) return 0;
             top_p_set = 1;
@@ -269,8 +283,12 @@ static int q38_generate_mtp(Q38Model *model, Q38Tokenizer *tokenizer,
     uint32_t *batch = (uint32_t *)malloc(
         options->mtp_depth * sizeof(uint32_t));
     if (!batch) return 0;
-    uint32_t current = q38_sample(sampler, logits,
-                                  q38_model_vocab_size(model));
+    uint32_t current = 0;
+    if (!q38_sample(sampler, logits, q38_model_vocab_size(model), &current)) {
+        fprintf(stderr, "qwen38: unable to sample the next token\n");
+        free(batch);
+        return 0;
+    }
     uint32_t generated = 0;
     double first_ready = 0.0;
     double last_ready = 0.0;
@@ -441,8 +459,13 @@ static int q38_generate(Q38Model *model, Q38Tokenizer *tokenizer,
     int truncated = 0;
     int ok = 1;
     while (ok && generated < options->max_tokens) {
-        const uint32_t token = q38_sample(
-            sampler, logits, q38_model_vocab_size(model));
+        uint32_t token = 0;
+        if (!q38_sample(sampler, logits, q38_model_vocab_size(model),
+                        &token)) {
+            fprintf(stderr, "qwen38: unable to sample the next token\n");
+            ok = 0;
+            break;
+        }
         const double ready = q38_now();
         if (token == eos) {
             ok = q38_defer_turn(tokenizer, tail, 0, 0, 0);

@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "tok.h"
+#include "tok_nfc.h"
 
 struct Q38Tokenizer {
     Tok tokenizer;
@@ -78,11 +79,12 @@ static int q38_build_vocab(Tok *tokenizer, const Q38GGUFMeta *tokens,
     }
     int special_count = 0;
     for (int id = 0; id < tokenizer->n_ids; ++id) {
-        tokenizer->id2str[id] = q38_copy_span(spans[id]);
-        if (!tokenizer->id2str[id]) {
+        char *token = q38_copy_span(spans[id]);
+        if (!token) {
             free(spans);
             return 0;
         }
+        tokenizer->id2str[id] = token;
         if (!hm_put(&tokenizer->vocab, tokenizer->id2str[id],
                     (int)spans[id].length, id)) {
             free(spans);
@@ -95,10 +97,13 @@ static int q38_build_vocab(Tok *tokenizer, const Q38GGUFMeta *tokens,
         }
         if (type == 3 || type == 4) ++special_count;
     }
-    tokenizer->sp = (Special *)calloc((size_t)special_count, sizeof(Special));
-    if (special_count && !tokenizer->sp) {
-        free(spans);
-        return 0;
+    if (special_count) {
+        tokenizer->sp = (Special *)calloc((size_t)special_count,
+                                           sizeof(Special));
+        if (!tokenizer->sp) {
+            free(spans);
+            return 0;
+        }
     }
     for (int id = 0; id < tokenizer->n_ids; ++id) {
         int32_t type = 1;
@@ -111,7 +116,9 @@ static int q38_build_vocab(Tok *tokenizer, const Q38GGUFMeta *tokens,
         special->len = (int)strlen(special->str);
         special->id = id;
     }
-    qsort(tokenizer->sp, (size_t)tokenizer->nsp, sizeof(Special), cmp_sp_len);
+    if (tokenizer->nsp > 1)
+        qsort(tokenizer->sp, (size_t)tokenizer->nsp,
+              sizeof(Special), cmp_sp_len);
     free(spans);
     return 1;
 }
@@ -149,8 +156,9 @@ static int q38_build_merges(Tok *tokenizer, const Q38GGUFMeta *merges)
         memcpy(key, spans[rank].data, left);
         key[left] = '\0';
         memcpy(key + left + 1u, separator + 1, right);
-        if (!hm_put(&tokenizer->merges, key,
-                    (int)(left + 1u + right), (int)rank)) {
+        const int key_length = (int)(left + 1u + right);
+        if (hm_get(&tokenizer->merges, key, key_length) >= 0 ||
+            !hm_put(&tokenizer->merges, key, key_length, (int)rank)) {
             free(key);
             free(spans);
             return 0;
@@ -187,6 +195,7 @@ Q38Tokenizer *q38_tokenizer_open_gguf(const char *path)
     }
     uint32_t eos = 0;
     if (!q38_gguf_meta_u32(&gguf, "tokenizer.ggml.eos_token_id", &eos) ||
+        eos >= tokens->count ||
         !q38_build_vocab(&result->tokenizer, tokens, types) ||
         !q38_build_merges(&result->tokenizer, merges)) {
         q38_tokenizer_close(result);
@@ -211,8 +220,19 @@ int q38_tokenizer_encode(Q38Tokenizer *tokenizer, const char *text,
 {
     if (!tokenizer || !text || !tokens || text_length > INT_MAX / 2 ||
         capacity > INT_MAX) return -1;
-    return tok_encode(&tokenizer->tokenizer, text, (int)text_length,
-                      (int *)tokens, (int)capacity);
+    char *normalized = NULL;
+    size_t normalized_length = 0;
+    if (!tok_nfc_normalize(text, text_length, &normalized,
+                           &normalized_length) ||
+        normalized_length > INT_MAX) {
+        free(normalized);
+        return -1;
+    }
+    const int count = tok_encode(&tokenizer->tokenizer, normalized,
+                                 (int)normalized_length,
+                                 (int *)tokens, (int)capacity);
+    free(normalized);
+    return count;
 }
 
 int q38_tokenizer_decode_token(Q38Tokenizer *tokenizer, uint32_t token,

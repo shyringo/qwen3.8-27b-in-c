@@ -109,7 +109,7 @@ llama.cpp 或其他推理引擎的套壳。
 
 - 完整 64 层主模型：48 层 Gated DeltaNet 和 16 层因果全注意力。
 - 循环卷积与 DeltaNet 状态、KV cache、RoPE、RMSNorm、稠密 SwiGLU、
-  Qwen 分词器、采样、思考强度控制和多轮对话。
+  与模型一致的 NFC 和 ByteLevel BPE 分词、采样、思考强度控制和多轮对话。
 - Q4_K/Q5_K/Q6_K 压缩权重直接计算、Q8_K 激活量化、AVX2/VNNI 整数
   点积和 OpenMP 输出行并行。
 - 分层 prompt 批处理、多 token 共享权重解码、跨投影复用激活量化结果、

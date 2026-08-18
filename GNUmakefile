@@ -31,7 +31,7 @@ MODEL_OBJ := $(BUILD)/src/qwen38/qwen38_model.o
 TOKENIZER_OBJ := $(BUILD)/src/qwen38/qwen38_tokenizer.o
 SAMPLER_OBJ := $(BUILD)/src/qwen38/qwen38_sampler.o
 TEST_BINS := $(BIN)/test_qwen38_gguf $(BIN)/test_qwen38_quant \
-	$(BIN)/test_qwen38_sampler
+	$(BIN)/test_qwen38_sampler $(BIN)/test_qwen38_nfc
 TOOL_BINS := $(BIN)/qwen38-gguf-inspect \
 	$(BIN)/qwen38-kernel-probe $(BIN)/qwen38-forward-probe \
 	$(BIN)/qwen38-logits-probe $(BIN)/qwen38-batch-probe \
@@ -48,6 +48,15 @@ $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
+$(GGUF_OBJ): include/qwen38/qwen38_gguf.h
+$(QUANT_OBJ): include/qwen38/qwen38_quant.h include/qwen38/qwen38_gguf.h
+$(MODEL_OBJ): include/qwen38/qwen38_model.h include/qwen38/qwen38_quant.h \
+	include/qwen38/qwen38_gguf.h
+$(TOKENIZER_OBJ): include/qwen38/qwen38_tokenizer.h \
+	include/qwen38/qwen38_gguf.h third_party/tok.h third_party/tok_unicode.h \
+	third_party/tok_nfc.h third_party/tok_nfc_data.h
+$(SAMPLER_OBJ): include/qwen38/qwen38_sampler.h
+
 $(BIN):
 	@mkdir -p $@
 
@@ -59,6 +68,10 @@ $(BIN)/test_qwen38_quant: tests/unit/test_qwen38_quant.c $(QUANT_OBJ) $(GGUF_OBJ
 
 $(BIN)/test_qwen38_sampler: tests/unit/test_qwen38_sampler.c $(SAMPLER_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+$(BIN)/test_qwen38_nfc: tests/unit/test_qwen38_nfc.c \
+	third_party/tok_nfc.h third_party/tok_nfc_data.h | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BIN)/qwen38-gguf-inspect: src/cli/qwen38_gguf_inspect.c $(GGUF_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
@@ -94,6 +107,7 @@ test: $(TEST_BINS) $(BIN)/qwen38
 	./$(BIN)/test_qwen38_gguf
 	./$(BIN)/test_qwen38_quant
 	./$(BIN)/test_qwen38_sampler
+	./$(BIN)/test_qwen38_nfc
 	./$(BIN)/qwen38 --help >/dev/null 2>&1
 
 strict:

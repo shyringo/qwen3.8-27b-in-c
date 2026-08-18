@@ -25,11 +25,18 @@ make portable
 ```
 
 The tests cover GGUF bounds and metadata, BPE control/user-defined tokens,
-Q4_K/Q5_K/Q6_K/Q8_0 decoding, Q8_K activation quantization, bit-exact batched
-matrix output, and greedy/top-k/top-p sampling. `strict` enables native
+Unicode NFC composition and canonical ordering, Q4_K/Q5_K/Q6_K/Q8_0 decoding,
+Q8_K activation quantization, bit-exact batched matrix output, and
+greedy/top-k/top-p sampling. `strict` enables native
 CPU/OpenMP code and treats warnings as errors; `portable` builds without
 architecture-specific SIMD or OpenMP. The same tests also run under
 AddressSanitizer and UndefinedBehaviorSanitizer during release validation.
+
+The C NFC implementation passes all 18,722 cases in the Unicode 9.0 official
+normalization suite. Independent comparisons against Hugging Face `tokenizers`
+0.22 match across the complete Unicode scalar range in 8,688 chunks and a
+separate 200-case set covering multilingual text, emoji, combining marks and
+chat-template tokens.
 
 ## Full-checkpoint oracle
 

@@ -116,7 +116,8 @@ inference runtime.
 
 - All 64 target layers: 48 Gated DeltaNet and 16 causal full-attention layers.
 - Recurrent convolution and DeltaNet state, KV cache, RoPE, RMSNorm, dense
-  SwiGLU, Qwen tokenizer, sampling, reasoning control, and multi-turn chat.
+  SwiGLU, model-matched NFC and ByteLevel BPE tokenization, sampling,
+  reasoning control, and multi-turn chat.
 - Packed Q4_K/Q5_K/Q6_K kernels, Q8_K activation quantization, AVX2/VNNI
   integer dot products, and OpenMP row parallelism.
 - Layer-major prompt batching, packed-weight decode reuse across tokens,

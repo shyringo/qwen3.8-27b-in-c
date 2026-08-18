@@ -137,6 +137,8 @@ int main(void)
     uint32_t ids[4] = {0};
     CHECK(q38_tokenizer_encode(tokenizer, input, strlen(input), ids, 4) == 2,
           "encode control and user-defined tokens atomically");
+    CHECK(q38_tokenizer_encode(tokenizer, input, strlen(input), ids, 1) < 0,
+          "reject truncated tokenizer output");
     CHECK(ids[0] == 2 && ids[1] == 3, "added token ids");
     CHECK(q38_tokenizer_is_special(tokenizer, ids[0]),
           "control token is hidden output");
@@ -147,6 +149,8 @@ int main(void)
                                      sizeof(decoded)) == 7 &&
           strcmp(decoded, "<think>") == 0,
           "decode user-defined token literally");
+    CHECK(q38_tokenizer_decode_token(tokenizer, ids[1], decoded, 4) < 0,
+          "reject truncated decoded token");
     q38_tokenizer_close(tokenizer);
     puts("qwen38 gguf: ok");
     return 0;

@@ -29,16 +29,17 @@ void q38_sampler_init(Q38Sampler *sampler, uint64_t seed)
     sampler->top_k = 20;
 }
 
-uint32_t q38_sample(Q38Sampler *sampler, const float *logits,
-                    uint32_t vocabulary_size)
+int q38_sample(Q38Sampler *sampler, const float *logits,
+               uint32_t vocabulary_size, uint32_t *token)
 {
-    if (!sampler || !logits || vocabulary_size == 0) return 0;
+    if (!sampler || !logits || vocabulary_size == 0 || !token) return 0;
     if (sampler->temperature <= 0.0f || sampler->top_k <= 1) {
         uint32_t best = 0;
         for (uint32_t id = 1; id < vocabulary_size; ++id) {
             if (logits[id] > logits[best]) best = id;
         }
-        return best;
+        *token = best;
+        return 1;
     }
     uint32_t count = sampler->top_k;
     if (count > vocabulary_size) count = vocabulary_size;
@@ -92,5 +93,6 @@ uint32_t q38_sample(Q38Sampler *sampler, const float *logits,
         }
     }
     free(candidates);
-    return selected;
+    *token = selected;
+    return 1;
 }
