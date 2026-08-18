@@ -1,0 +1,7 @@
+<|im_start|>user
+科技的边界在哪里？<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

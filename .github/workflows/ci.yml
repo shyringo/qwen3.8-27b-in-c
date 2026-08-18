@@ -1,0 +1,33 @@
+name: C tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native strict build
+        run: make strict
+      - name: Portable C99 build
+        run: make portable
+      - name: Bootstrap syntax
+        run: bash -n qwen38.sh scripts/*.sh
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenMP
+        run: brew install libomp
+      - name: Native OpenMP build
+        run: make strict
+      - name: Portable C99 build
+        run: make portable
+      - name: Bootstrap syntax
+        run: bash -n qwen38.sh scripts/*.sh

@@ -1,0 +1,8 @@
+/bin/
+/build/
+/.deps/
+/model/
+*.gguf
+*.safetensors
+*.part
+.DS_Store

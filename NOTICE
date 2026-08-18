@@ -1,0 +1,32 @@
+# NOTICE
+
+qwen3.8-27b-in-c is licensed under the Apache License 2.0 (see LICENSE).
+
+## Code provenance
+
+The byte-level BPE tokenizer foundation was adapted from
+[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c), copyright
+Fareed Khan and contributors, and is used under the Apache License 2.0. The
+retained implementation is tailored to the Qwen tokenizer stored in GGUF.
+
+The Qwen3.8 model graph, GGUF reader, quantized CPU kernels, batching,
+recurrent state management, sampling, command-line runtime and MTP
+verification in this repository are native project code. No external
+inference engine is downloaded or invoked at runtime.
+
+## Model
+
+[Qwen3.8-27B](https://github.com/QwenLM/Qwen3.8) is released by the Qwen
+team under Apache License 2.0.
+
+The default GGUF is published by
+[Unsloth on ModelScope](https://www.modelscope.cn/models/unsloth/Qwen3.8-27B-GGUF).
+
+Model weights are downloaded into the user's cache and are not redistributed
+in this repository.
+
+## Trademarks
+
+This project is not affiliated with, endorsed by, or sponsored by the Qwen
+team, Unsloth, or the kimi-k3-in-c project. Their names and model names identify
+the checkpoint and credited source material used by this project.
