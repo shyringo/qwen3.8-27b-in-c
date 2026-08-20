@@ -1,15 +1,29 @@
-<div align="center">
+<h1 align="center">Qwen3.8-27B in C: Laptop CPU Inference</h1>
 
-# Run Qwen3.8-27B on a Laptop CPU
+<p align="center">
+  <strong>Run the 27B-parameter Qwen3.8 language model locally on one laptop CPU.</strong><br>
+  A native C inference engine with no GPU, CUDA, Python, PyTorch, model conversion, or external inference runtime.
+</p>
 
-**A native C inference engine for local Qwen3.8-27B chat and work.**<br>
-No GPU, CUDA, Python, PyTorch, model conversion, or external inference runtime.
+<table align="center">
+  <tr>
+    <td align="center"><strong>27B</strong><br>parameters</td>
+    <td align="center"><strong>8 GB RAM</strong><br>minimum tested limit</td>
+    <td align="center"><strong>0.397 s/token</strong><br>best TPOT on a 32 GB x86 laptop<br><strong>2.52 token/s</strong></td>
+  </tr>
+</table>
 
-**27B parameters · single CPU · 15.24 GiB peak RSS · best measured TPOT 0.568 s/token (1.76 token/s)**
+<p align="center">
+  <a href="https://github.com/shyringo/qwen3.8-27b-in-c/actions/workflows/ci.yml"><img src="https://github.com/shyringo/qwen3.8-27b-in-c/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/shyringo/qwen3.8-27b-in-c" alt="License"></a>
+</p>
 
-[简体中文](README.zh-CN.md) · [Architecture](docs/ARCHITECTURE.md) · [Optimizations](docs/OPTIMIZATIONS.md) · [Correctness](docs/CORRECTNESS.md)
-
-</div>
+<p align="center">
+  <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a><br>
+  <a href="#quick-start"><strong>Quick start</strong></a> ·
+  <a href="#measured-performance">Performance</a> ·
+  <a href="#inference-optimizations-implemented-in-this-project">Inference optimizations</a>
+</p>
 
 ## Quick start
 
@@ -33,9 +47,23 @@ cd qwen3.8-27b-in-c
 ./qwen38.sh
 ```
 
-The launcher builds the engine, resumes the 17.1 GB Q4_K_M download from
-ModelScope when needed, and opens an interactive conversation. Enter `/reset`
-for a new conversation and `/exit` to quit.
+The launcher compiles the engine, downloads and verifies an Unsloth Dynamic V3
+GGUF from ModelScope with resume support, then opens an interactive
+conversation. It selects the higher-quality 15.33 GiB Q4_K_M file when at
+least 20 GiB of memory is available and the 6.27 GiB IQ1_M file on smaller
+systems. No weight conversion is needed. Enter `/reset` for a new conversation
+and `/exit` to quit.
+
+This release supports text chat and text generation. Image and video inputs
+are not accepted by the current runtime.
+
+The choice can be overridden when needed:
+
+```bash
+QWEN38_QUANT=q4_k_m ./qwen38.sh   # higher-quality 4-bit path
+QWEN38_QUANT=iq1_m ./qwen38.sh    # 8 GB memory path
+QWEN38_QUANT=iq2_m ./qwen38.sh    # optional middle-sized path
+```
 
 Run one request:
 
@@ -66,77 +94,117 @@ Run the fixed 32-token greedy benchmark:
 ```
 
 The defaults are a 4,096-token context, a 1,024-token output limit per turn,
-and at most 12 CPU threads. The model is stored under
+and up to 12 automatically managed CPU threads. The model is stored under
 `~/.cache/qwen3.8-27b-in-c/model`; set `QWEN38_MODEL_DIR` to use another
-location.
+disk.
 
 ## Environment requirements
 
-- A 64-bit POSIX system, a C99 compiler, `make`, and `curl`. Windows users
+- A 64-bit POSIX system, a C compiler, `make`, and `curl`. Windows users
   should use WSL2.
-- At least 18 GB of free disk space for the pinned Q4_K_M GGUF.
-- About 20 GiB of memory available to the inference process is recommended.
-  Peak RSS measured at context 4,096 is 15.24 GiB; extra headroom keeps the
-  operating system responsive.
+- The IQ1_M path needs 8 GB of RAM and 8 GB of free disk space. It completed a
+  normal first-token request under an 8 GiB process-address limit and measured
+  6.01 GiB peak RSS at context 4,096. On machines with at least 12 GiB
+  available, the engine may use up to about 9.30 GiB for a faster bit-exact
+  runtime layout.
+- Q4_K_M is selected when at least 20 GiB of memory is available. It needs
+  about 17 GB of free disk space and measured 14.49 GiB peak RSS. The 4-bit
+  file retains more weight precision than the 1-bit low-memory path.
 - An x86-64 CPU with AVX2 is recommended for the optimized kernels. A tested
   portable scalar build is available for other 64-bit POSIX CPUs.
 
 Keeping the model on a native Linux or macOS filesystem gives the operating
-system the best chance to cache its 17 GB mapping. Under WSL2, the default
+system the best chance to cache its read-only mapping. Under WSL2, the default
 `~/.cache` location is on the Linux filesystem.
 
 ## Measured performance
 
-The following are best wall-clock results from the fixed benchmark, not an
-estimate:
+The following are the best wall-clock values observed across repeated runs,
+not estimates:
 
-| mode | TTFT | TPOT | throughput |
-|---|---:|---:|---:|
-| ordinary greedy decode (default) | 4.001 s | **0.568 s/token** | **1.76 token/s** |
-| MTP verification, depth 3 | 5.349 s | 0.806 s/token | 1.24 token/s |
-| MTP verification, depth 4 | 5.233 s | 0.928 s/token | 1.08 token/s |
+| weights and workload | TTFT | TPOT | throughput | peak RSS |
+|---|---:|---:|---:|---:|
+| Dynamic V3 IQ1_M, 16-token chat output | **4.064 s** | **0.397 s/token** | **2.52 token/s** | **6.13 GiB** |
+| Dynamic V3 IQ1_M, four-token batched forward | - | 0.253 s/token | 3.95 token/s | - |
+| Dynamic V3 Q4_K_M, 32-token resident chat request | 4.359 s | 0.531 s/token | 1.88 token/s | 14.49 GiB |
 
 Reference environment: Intel Core i5-1340P laptop, 32 GB host memory, Windows
-11 with WSL2 Ubuntu 22.04.5 (24 GiB guest limit), GCC 11.4, 12 OpenMP threads,
-4,096-token context, pinned Q4_K_M weights on the WSL2 ext4 filesystem, warm
-model pages, a fixed 16-token prompt, and 32 greedy output tokens. The default
-exact-SiLU path was used. `/usr/bin/time -v` measured 15,980,928 KiB
-(15.24 GiB) peak RSS with no swap.
+11 with WSL2 Ubuntu 22.04.5 (24 GiB guest limit), GCC 11.4, 4,096-token
+context, 12 OpenMP threads, exact SiLU, pinned weights on the WSL2 ext4
+filesystem, warm model pages, a fixed 16-token prompt, and greedy direct-answer
+generation. The model, tokenizer, runtime layout, state, and thread pool were
+already resident before the measured request. `/usr/bin/time -v` measured peak
+RSS with no swap.
 
-TTFT is especially sensitive to model-page cache state, storage, power mode,
-temperature, and other running programs. TPOT is measured between generated
-tokens and includes sampling and all model work. MTP remains optional because
-its verification cost exceeded its acceptance benefit on this workload.
+TTFT starts when a resident engine accepts the request; model download,
+process startup, model mapping, runtime repacking, and thread-pool creation are
+excluded. It remains sensitive to storage page state, power mode, temperature,
+and other running programs. TPOT spans actual token-ready timestamps and
+includes sampling plus all model work. MTP remains optional because its
+verification cost exceeded its acceptance benefit on this workload.
 
-## Native inference engine
+IQ1_M and Q4_K_M are lossy quantizations of the original checkpoint and make
+different quality/memory trade-offs. The engine adds no second approximation:
+for the same GGUF, optimized and baseline native paths produce byte-identical
+full logits.
 
-This repository implements the Qwen3.8-27B graph directly in C and reads the
-single-file GGUF in place. It is not a wrapper around llama.cpp or another
-inference runtime.
+## Inference optimizations implemented in this project
 
-- All 64 target layers: 48 Gated DeltaNet and 16 causal full-attention layers.
-- Recurrent convolution and DeltaNet state, KV cache, RoPE, RMSNorm, dense
-  SwiGLU, model-matched NFC and ByteLevel BPE tokenization, sampling,
-  reasoning control, and multi-turn chat.
-- Packed Q4_K/Q5_K/Q6_K kernels, Q8_K activation quantization, AVX2/VNNI
-  integer dot products, and OpenMP row parallelism.
-- Layer-major prompt batching, packed-weight decode reuse across tokens,
-  activation reuse across projections, memory-mapped weights, and resident
-  cross-turn state.
-- Exact SiLU by default and output-equivalent transactional greedy MTP as an
-  explicit experimental option.
+The implementation has three provenance groups: code adapted from
+[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c), native C
+adaptations of published Qwen, GGUF, and ggml work, and original engineering
+built for this runtime. The complete classification and source boundaries are
+in [Optimizations and provenance](docs/OPTIMIZATIONS.md).
 
-See [Optimizations](docs/OPTIMIZATIONS.md) for implementation details and code
-provenance. [Architecture](docs/ARCHITECTURE.md) describes the graph, state,
-batching, and memory layout.
+This project is not based on, linked to or wrapped around llama.cpp. It has its
+own C model graph, GGUF reader, quantized kernels, state management, tokenizer,
+sampling and chat runtime. llama.cpp is used only as an independent correctness
+and performance reference.
+
+The project-specific designs include:
+
+- **Recurrence-safe layer-major batching.** Share packed-weight reads across
+  prompt positions while convolution, DeltaNet and causal KV state advance in
+  exact token order.
+- **Multi-token low-bit kernels.** Decode each packed K-quant or IQ block once
+  for a four-token tile, with independent accumulators and output bit-identical
+  to separate GEMV calls.
+- **Memory-aware bit-exact IQ1 repacking.** On machines with spare RAM, build a
+  SIMD-friendly view of hot IQ1_S metadata once at model load; constrained
+  machines keep the original 6.27 GiB mapping-only path.
+- **Vectorized hybrid-state execution.** AVX2/VNNI covers packed integer dot
+  products and DeltaNet state updates while exact SiLU remains the default.
+- **Fused DeltaNet state traversal.** Update recurrent state and compute its
+  output dot product in one memory pass while preserving every native logit
+  bit.
+- **Cross-turn tail fusion.** Fold the pending final token, thinking closure
+  and EOS into the next prefill without changing official chat boundaries.
+- **Transactional recurrent MTP.** Checkpoint, roll back, replay and realign
+  recurrent target/draft state so rejected tokens are never shown or retained.
+- **Laptop-aware automatic scheduling.** Cap automatic CPU use at 12 workers
+  and stabilize WSL2 vCPU placement unless the user supplies OpenMP settings.
+- **Model-matched tokenizer validation.** Validate Unicode 9.0 normalization,
+  atomic special tokens and ByteLevel BPE across the official normalization
+  suite and the complete Unicode scalar range.
+- **User-facing model bootstrap.** ModelScope-first resumable downloads,
+  pinned hashes, disk checks, memory-based model selection, and a native
+  filesystem cache turn a multi-gigabyte checkpoint into one command.
+
+The complete 64-layer graph contains 48 Gated DeltaNet layers and 16 causal
+full-attention layers. See [Architecture](docs/ARCHITECTURE.md) for the graph,
+state, batching and memory layout.
 
 ## Inference correctness
 
-Correctness is checked with the same pinned Q4_K_M weights. Native layer-major
-prefill and native token-at-a-time evaluation produce byte-identical 248,320
-dimensional logits for the fixed oracle prompt. An independent no-repack
-evaluator returns the same top-five token order. Native transactional MTP also
-reproduces ordinary native greedy decoding token for token.
+Correctness is always checked with the exact same GGUF file. For both pinned
+Dynamic V3 weights, native layer-major prefill and native token-at-a-time
+evaluation produce byte-identical 248,320-dimensional logits for the fixed
+oracle prompt. The IQ1_M full-logit SHA-256 is
+`bd6a05d14b66d2bde0a35494f570df0677391a4f83c7c76c8a8be25804a4adb8`;
+the Q4_K_M SHA-256 is
+`c41064cc8fa9b5bd8150b182fed48a9ca53fb1b59b2582c316e8e9ce545ba31b`.
+The optional runtime repack, multi-token kernels, fused recurrent path, and
+transactional MTP are each checked against their native baseline.
 
 ```bash
 make strict
@@ -146,15 +214,15 @@ make portable
 The model hash, oracle SHA, logits comparison, token IDs, and test scope are in
 [Correctness](docs/CORRECTNESS.md).
 
-## Model, license, and attribution
+## License and acknowledgements
 
-The launcher downloads
-[Unsloth's Qwen3.8-27B Q4_K_M GGUF](https://www.modelscope.cn/models/unsloth/Qwen3.8-27B-GGUF)
-from ModelScope first, with a Hugging Face fallback. The official
+The launcher downloads pinned IQ1_M or Q4_K_M weights from
+[Unsloth's Qwen3.8-27B GGUF collection](https://www.modelscope.cn/models/unsloth/Qwen3.8-27B-GGUF)
+on ModelScope first, with a Hugging Face fallback. The official
 [Qwen3.8-27B model](https://www.modelscope.cn/models/Qwen/Qwen3.8-27B), the
-[Qwen3.8 project](https://github.com/QwenLM/Qwen3.8), and this repository use
-the Apache License 2.0. Model weights are downloaded to the user's cache and
-are not included here.
+[Qwen3 project](https://github.com/QwenLM/Qwen3), and this repository use the
+Apache License 2.0. Model weights are downloaded to the user's cache and are
+not included here.
 
 The byte-level BPE foundation was adapted from
 [kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c). See

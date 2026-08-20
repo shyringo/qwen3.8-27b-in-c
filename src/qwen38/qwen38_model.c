@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "qwen38_model.h"
 
 #include "qwen38_gguf.h"
@@ -7,6 +9,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
+#include <unistd.h>
 
 #if defined(__AVX2__)
 #include <immintrin.h>
@@ -105,14 +109,18 @@ typedef struct {
 
 struct Q38Model {
     Q38GGUF gguf;
+    Q38GGUF mtp_gguf;
     const Q38GGUFTensor *embedding;
     const Q38GGUFTensor *output_norm;
     const Q38GGUFTensor *output;
+    const Q38GGUFTensor *mtp_embedding;
+    const Q38GGUFTensor *mtp_output;
     Q38Layer layers[Q38_TOTAL_LAYERS];
     Q38MTPWeights mtp;
     uint32_t context_length;
     uint32_t position;
     uint32_t mtp_position;
+    int mtp_weights_loaded;
     int mtp_enabled;
     float *mtp_input_hidden;
     float *checkpoint_conv_state;
@@ -127,19 +135,21 @@ struct Q38Model {
     Q38Scratch scratch;
 };
 
-static const Q38GGUFTensor *q38_weight(Q38Model *model, const char *name)
+static const Q38GGUFTensor *q38_weight_from(const Q38GGUF *gguf,
+                                            const char *name)
 {
-    const Q38GGUFTensor *tensor = q38_gguf_find_tensor(&model->gguf, name);
+    const Q38GGUFTensor *tensor = q38_gguf_find_tensor(gguf, name);
     if (!tensor) fprintf(stderr, "qwen38: missing tensor %s\n", name);
     return tensor;
 }
 
-static const Q38GGUFTensor *q38_layer_weight(Q38Model *model, int layer,
-                                             const char *suffix)
+static const Q38GGUFTensor *q38_layer_weight_from(const Q38GGUF *gguf,
+                                                  int layer,
+                                                  const char *suffix)
 {
     char name[128];
     snprintf(name, sizeof(name), "blk.%d.%s", layer, suffix);
-    return q38_weight(model, name);
+    return q38_weight_from(gguf, name);
 }
 
 static int q38_meta_string_is(const Q38GGUF *gguf, const char *key,
@@ -159,12 +169,23 @@ static int q38_meta_u32_is(const Q38GGUF *gguf, const char *key,
     return q38_gguf_meta_u32(gguf, key, &value) && value == expected;
 }
 
+static int q38_matrix_type_q8_k(uint32_t type)
+{
+    return type == Q38_GGML_Q2_K || type == Q38_GGML_Q3_K ||
+           type == Q38_GGML_Q4_K || type == Q38_GGML_Q5_K ||
+           type == Q38_GGML_Q6_K || type == Q38_GGML_IQ2_XXS ||
+           type == Q38_GGML_IQ2_XS || type == Q38_GGML_IQ3_XXS ||
+           type == Q38_GGML_IQ4_NL || type == Q38_GGML_IQ3_S ||
+           type == Q38_GGML_IQ2_S ||
+           type == Q38_GGML_IQ4_XS || type == Q38_GGML_IQ1_S ||
+           type == Q38_GGML_IQ1_M;
+}
+
 static int q38_matrix_type_supported(uint32_t type)
 {
     return type == Q38_GGML_F32 || type == Q38_GGML_F16 ||
            type == Q38_GGML_BF16 || type == Q38_GGML_Q8_0 ||
-           type == Q38_GGML_Q4_K || type == Q38_GGML_Q5_K ||
-           type == Q38_GGML_Q6_K;
+           q38_matrix_type_q8_k(type);
 }
 
 static int q38_expect_tensor(const Q38GGUFTensor *tensor, const char *name,
@@ -234,12 +255,17 @@ static int q38_validate_layer(const Q38Layer *weights, int layer)
     return ok;
 }
 
-static int q38_validate_contract(const Q38Model *model)
+static int q38_validate_base_contract(const Q38Model *model)
 {
     const Q38GGUF *gguf = &model->gguf;
-    int ok = q38_meta_string_is(gguf, "general.architecture", "qwen35") &&
-             q38_meta_u32_is(gguf, "qwen35.block_count", Q38_TOTAL_LAYERS) &&
-             q38_meta_u32_is(gguf, "qwen35.nextn_predict_layers", 1) &&
+    uint32_t block_count = 0;
+    uint32_t nextn_layers = 0;
+    int ok = q38_gguf_meta_u32(gguf, "qwen35.block_count", &block_count) &&
+             q38_gguf_meta_u32(gguf, "qwen35.nextn_predict_layers",
+                               &nextn_layers) &&
+             ((block_count == Q38_LAYERS && nextn_layers == 0) ||
+              (block_count == Q38_TOTAL_LAYERS && nextn_layers == 1)) &&
+             q38_meta_string_is(gguf, "general.architecture", "qwen35") &&
              q38_meta_u32_is(gguf, "qwen35.embedding_length", Q38_HIDDEN) &&
              q38_meta_u32_is(gguf, "qwen35.feed_forward_length", Q38_FFN) &&
              q38_meta_u32_is(gguf, "qwen35.attention.head_count", Q38_ATTN_HEADS) &&
@@ -259,8 +285,28 @@ static int q38_validate_contract(const Q38Model *model)
                             0, 1);
     ok &= q38_expect_tensor(model->output, "output.weight", Q38_HIDDEN,
                             Q38_VOCAB, 0);
-    for (int layer = 0; layer < Q38_TOTAL_LAYERS; ++layer)
+    for (int layer = 0; layer < Q38_LAYERS; ++layer)
         ok &= q38_validate_layer(&model->layers[layer], layer);
+    return ok;
+}
+
+static int q38_validate_mtp_contract(const Q38Model *model,
+                                     const Q38GGUF *gguf)
+{
+    int ok = q38_meta_string_is(gguf, "general.architecture", "qwen35") &&
+             q38_meta_u32_is(gguf, "qwen35.block_count", Q38_TOTAL_LAYERS) &&
+             q38_meta_u32_is(gguf, "qwen35.nextn_predict_layers", 1) &&
+             q38_meta_u32_is(gguf, "qwen35.embedding_length", Q38_HIDDEN) &&
+             q38_meta_u32_is(gguf, "qwen35.feed_forward_length", Q38_FFN);
+    if (!ok) {
+        fprintf(stderr, "qwen38: MTP checkpoint metadata is not Qwen3.8-27B\n");
+        return 0;
+    }
+    ok &= q38_expect_tensor(model->mtp_embedding, "token_embd.weight",
+                            Q38_HIDDEN, Q38_VOCAB, 0);
+    ok &= q38_expect_tensor(model->mtp_output, "output.weight", Q38_HIDDEN,
+                            Q38_VOCAB, 0);
+    ok &= q38_validate_layer(&model->layers[Q38_LAYERS], Q38_LAYERS);
     ok &= q38_expect_tensor(model->mtp.eh_proj, "blk.64.nextn.eh_proj.weight",
                             2u * Q38_HIDDEN, Q38_HIDDEN, 0);
     ok &= q38_expect_tensor(model->mtp.enorm, "blk.64.nextn.enorm.weight",
@@ -273,75 +319,100 @@ static int q38_validate_contract(const Q38Model *model)
     return ok;
 }
 
+static int q38_bind_layer(Q38Layer *weights, const Q38GGUF *gguf, int layer)
+{
+    memset(weights, 0, sizeof(*weights));
+    weights->attn_norm = q38_layer_weight_from(gguf, layer, "attn_norm.weight");
+    weights->post_norm = q38_layer_weight_from(
+        gguf, layer, "post_attention_norm.weight");
+    weights->ffn_gate = q38_layer_weight_from(gguf, layer, "ffn_gate.weight");
+    weights->ffn_up = q38_layer_weight_from(gguf, layer, "ffn_up.weight");
+    weights->ffn_down = q38_layer_weight_from(gguf, layer, "ffn_down.weight");
+    if ((layer + 1) % 4 == 0 || layer == Q38_LAYERS) {
+        weights->attention.full.q = q38_layer_weight_from(
+            gguf, layer, "attn_q.weight");
+        weights->attention.full.k = q38_layer_weight_from(
+            gguf, layer, "attn_k.weight");
+        weights->attention.full.v = q38_layer_weight_from(
+            gguf, layer, "attn_v.weight");
+        weights->attention.full.out = q38_layer_weight_from(
+            gguf, layer, "attn_output.weight");
+        weights->attention.full.q_norm = q38_layer_weight_from(
+            gguf, layer, "attn_q_norm.weight");
+        weights->attention.full.k_norm = q38_layer_weight_from(
+            gguf, layer, "attn_k_norm.weight");
+        return weights->attn_norm && weights->post_norm && weights->ffn_gate &&
+               weights->ffn_up && weights->ffn_down &&
+               weights->attention.full.q && weights->attention.full.k &&
+               weights->attention.full.v && weights->attention.full.out &&
+               weights->attention.full.q_norm && weights->attention.full.k_norm;
+    }
+    weights->attention.linear.qkv = q38_layer_weight_from(
+        gguf, layer, "attn_qkv.weight");
+    weights->attention.linear.z = q38_layer_weight_from(
+        gguf, layer, "attn_gate.weight");
+    weights->attention.linear.alpha = q38_layer_weight_from(
+        gguf, layer, "ssm_alpha.weight");
+    weights->attention.linear.beta = q38_layer_weight_from(
+        gguf, layer, "ssm_beta.weight");
+    weights->attention.linear.conv = q38_layer_weight_from(
+        gguf, layer, "ssm_conv1d.weight");
+    weights->attention.linear.dt = q38_layer_weight_from(
+        gguf, layer, "ssm_dt.bias");
+    weights->attention.linear.a = q38_layer_weight_from(gguf, layer, "ssm_a");
+    weights->attention.linear.norm = q38_layer_weight_from(
+        gguf, layer, "ssm_norm.weight");
+    weights->attention.linear.out = q38_layer_weight_from(
+        gguf, layer, "ssm_out.weight");
+    return weights->attn_norm && weights->post_norm && weights->ffn_gate &&
+           weights->ffn_up && weights->ffn_down &&
+           weights->attention.linear.qkv && weights->attention.linear.z &&
+           weights->attention.linear.alpha && weights->attention.linear.beta &&
+           weights->attention.linear.conv && weights->attention.linear.dt &&
+           weights->attention.linear.a && weights->attention.linear.norm &&
+           weights->attention.linear.out;
+}
+
+static int q38_bind_mtp_weights(Q38Model *model, const Q38GGUF *gguf)
+{
+    model->mtp_embedding = q38_weight_from(gguf, "token_embd.weight");
+    model->mtp_output = q38_weight_from(gguf, "output.weight");
+    if (!q38_bind_layer(&model->layers[Q38_LAYERS], gguf, Q38_LAYERS))
+        return 0;
+    model->mtp.eh_proj = q38_layer_weight_from(
+        gguf, Q38_LAYERS, "nextn.eh_proj.weight");
+    model->mtp.enorm = q38_layer_weight_from(
+        gguf, Q38_LAYERS, "nextn.enorm.weight");
+    model->mtp.hnorm = q38_layer_weight_from(
+        gguf, Q38_LAYERS, "nextn.hnorm.weight");
+    model->mtp.shared_head_norm = q38_layer_weight_from(
+        gguf, Q38_LAYERS, "nextn.shared_head_norm.weight");
+    if (!model->mtp_embedding || !model->mtp_output || !model->mtp.eh_proj ||
+        !model->mtp.enorm || !model->mtp.hnorm ||
+        !model->mtp.shared_head_norm || !q38_validate_mtp_contract(model, gguf))
+        return 0;
+    model->mtp_weights_loaded = 1;
+    return 1;
+}
+
 static int q38_bind_weights(Q38Model *model)
 {
-    model->embedding = q38_weight(model, "token_embd.weight");
-    model->output_norm = q38_weight(model, "output_norm.weight");
-    model->output = q38_weight(model, "output.weight");
+    model->embedding = q38_weight_from(&model->gguf, "token_embd.weight");
+    model->output_norm = q38_weight_from(&model->gguf, "output_norm.weight");
+    model->output = q38_weight_from(&model->gguf, "output.weight");
     if (!model->embedding || !model->output_norm || !model->output) return 0;
+    for (int layer = 0; layer < Q38_LAYERS; ++layer)
+        if (!q38_bind_layer(&model->layers[layer], &model->gguf, layer)) return 0;
+    if (!q38_validate_base_contract(model)) return 0;
 
-    for (int layer = 0; layer < Q38_LAYERS; ++layer) {
-        Q38Layer *weights = &model->layers[layer];
-        weights->attn_norm = q38_layer_weight(model, layer, "attn_norm.weight");
-        weights->post_norm = q38_layer_weight(model, layer, "post_attention_norm.weight");
-        weights->ffn_gate = q38_layer_weight(model, layer, "ffn_gate.weight");
-        weights->ffn_up = q38_layer_weight(model, layer, "ffn_up.weight");
-        weights->ffn_down = q38_layer_weight(model, layer, "ffn_down.weight");
-        if ((layer + 1) % 4 == 0) {
-            weights->attention.full.q = q38_layer_weight(model, layer, "attn_q.weight");
-            weights->attention.full.k = q38_layer_weight(model, layer, "attn_k.weight");
-            weights->attention.full.v = q38_layer_weight(model, layer, "attn_v.weight");
-            weights->attention.full.out = q38_layer_weight(model, layer, "attn_output.weight");
-            weights->attention.full.q_norm = q38_layer_weight(model, layer, "attn_q_norm.weight");
-            weights->attention.full.k_norm = q38_layer_weight(model, layer, "attn_k_norm.weight");
-            if (!weights->attention.full.q || !weights->attention.full.k ||
-                !weights->attention.full.v || !weights->attention.full.out ||
-                !weights->attention.full.q_norm || !weights->attention.full.k_norm) return 0;
-        } else {
-            weights->attention.linear.qkv = q38_layer_weight(model, layer, "attn_qkv.weight");
-            weights->attention.linear.z = q38_layer_weight(model, layer, "attn_gate.weight");
-            weights->attention.linear.alpha = q38_layer_weight(model, layer, "ssm_alpha.weight");
-            weights->attention.linear.beta = q38_layer_weight(model, layer, "ssm_beta.weight");
-            weights->attention.linear.conv = q38_layer_weight(model, layer, "ssm_conv1d.weight");
-            weights->attention.linear.dt = q38_layer_weight(model, layer, "ssm_dt.bias");
-            weights->attention.linear.a = q38_layer_weight(model, layer, "ssm_a");
-            weights->attention.linear.norm = q38_layer_weight(model, layer, "ssm_norm.weight");
-            weights->attention.linear.out = q38_layer_weight(model, layer, "ssm_out.weight");
-            if (!weights->attention.linear.qkv || !weights->attention.linear.z ||
-                !weights->attention.linear.alpha || !weights->attention.linear.beta ||
-                !weights->attention.linear.conv || !weights->attention.linear.dt ||
-                !weights->attention.linear.a || !weights->attention.linear.norm ||
-                !weights->attention.linear.out) return 0;
-        }
-        if (!weights->attn_norm || !weights->post_norm || !weights->ffn_gate ||
-            !weights->ffn_up || !weights->ffn_down) return 0;
-    }
-
-    Q38Layer *weights = &model->layers[Q38_LAYERS];
-    weights->attn_norm = q38_layer_weight(model, Q38_LAYERS, "attn_norm.weight");
-    weights->post_norm = q38_layer_weight(model, Q38_LAYERS, "post_attention_norm.weight");
-    weights->ffn_gate = q38_layer_weight(model, Q38_LAYERS, "ffn_gate.weight");
-    weights->ffn_up = q38_layer_weight(model, Q38_LAYERS, "ffn_up.weight");
-    weights->ffn_down = q38_layer_weight(model, Q38_LAYERS, "ffn_down.weight");
-    weights->attention.full.q = q38_layer_weight(model, Q38_LAYERS, "attn_q.weight");
-    weights->attention.full.k = q38_layer_weight(model, Q38_LAYERS, "attn_k.weight");
-    weights->attention.full.v = q38_layer_weight(model, Q38_LAYERS, "attn_v.weight");
-    weights->attention.full.out = q38_layer_weight(model, Q38_LAYERS, "attn_output.weight");
-    weights->attention.full.q_norm = q38_layer_weight(model, Q38_LAYERS, "attn_q_norm.weight");
-    weights->attention.full.k_norm = q38_layer_weight(model, Q38_LAYERS, "attn_k_norm.weight");
-    model->mtp.eh_proj = q38_layer_weight(model, Q38_LAYERS, "nextn.eh_proj.weight");
-    model->mtp.enorm = q38_layer_weight(model, Q38_LAYERS, "nextn.enorm.weight");
-    model->mtp.hnorm = q38_layer_weight(model, Q38_LAYERS, "nextn.hnorm.weight");
-    model->mtp.shared_head_norm = q38_layer_weight(
-        model, Q38_LAYERS, "nextn.shared_head_norm.weight");
-    if (!weights->attn_norm || !weights->post_norm || !weights->ffn_gate ||
-        !weights->ffn_up || !weights->ffn_down || !weights->attention.full.q ||
-        !weights->attention.full.k || !weights->attention.full.v ||
-        !weights->attention.full.out || !weights->attention.full.q_norm ||
-        !weights->attention.full.k_norm || !model->mtp.eh_proj ||
-        !model->mtp.enorm || !model->mtp.hnorm ||
-        !model->mtp.shared_head_norm) return 0;
-    return q38_validate_contract(model);
+    uint32_t block_count = 0;
+    uint32_t nextn_layers = 0;
+    if (!q38_gguf_meta_u32(&model->gguf, "qwen35.block_count", &block_count) ||
+        !q38_gguf_meta_u32(&model->gguf, "qwen35.nextn_predict_layers",
+                            &nextn_layers)) return 0;
+    if (block_count == Q38_TOTAL_LAYERS && nextn_layers == 1)
+        return q38_bind_mtp_weights(model, &model->gguf);
+    return 1;
 }
 
 static float q38_scalar(const Q38GGUFTensor *tensor, uint64_t index)
@@ -529,8 +600,7 @@ static int q38_project(float *output, const float *input,
                        const Q38Q8KBlock *quantized, uint64_t length,
                        const Q38GGUFTensor *weight)
 {
-    if (weight->type == Q38_GGML_Q4_K || weight->type == Q38_GGML_Q5_K ||
-        weight->type == Q38_GGML_Q6_K)
+    if (q38_matrix_type_q8_k(weight->type))
         return q38_tensor_gemv_q8_k(output, quantized, length, weight);
     return q38_tensor_gemv_f32(output, input, weight);
 }
@@ -573,6 +643,7 @@ static float q38_dot_f32_128(const float *left, const float *right)
 #endif
 }
 
+#if !defined(__AVX2__) || !defined(__FMA__)
 static void q38_mad_f32_128(float *output, const float *input, float scale)
 {
 #if defined(__AVX2__) && defined(__FMA__)
@@ -586,6 +657,40 @@ static void q38_mad_f32_128(float *output, const float *input, float scale)
 #else
     for (int i = 0; i < Q38_LINEAR_HEAD_DIM; ++i)
         output[i] += input[i] * scale;
+#endif
+}
+#endif
+
+static float q38_mad_dot_f32_128(float *output, const float *input,
+                                 float scale, const float *right)
+{
+#if defined(__AVX2__) && defined(__FMA__)
+    __m256 sums[4] = {
+        _mm256_setzero_ps(), _mm256_setzero_ps(),
+        _mm256_setzero_ps(), _mm256_setzero_ps()
+    };
+    const __m256 factor = _mm256_set1_ps(scale);
+    for (int i = 0; i < Q38_LINEAR_HEAD_DIM; i += 32) {
+        for (int lane = 0; lane < 4; ++lane) {
+            const int offset = i + lane * 8;
+            const __m256 updated = _mm256_fmadd_ps(
+                _mm256_loadu_ps(input + offset), factor,
+                _mm256_loadu_ps(output + offset));
+            _mm256_storeu_ps(output + offset, updated);
+            sums[lane] = _mm256_fmadd_ps(
+                updated, _mm256_loadu_ps(right + offset), sums[lane]);
+        }
+    }
+    sums[0] = _mm256_add_ps(sums[0], sums[2]);
+    sums[1] = _mm256_add_ps(sums[1], sums[3]);
+    sums[0] = _mm256_add_ps(sums[0], sums[1]);
+    const __m128 halves = _mm_add_ps(_mm256_castps256_ps128(sums[0]),
+                                     _mm256_extractf128_ps(sums[0], 1));
+    const __m128 pairs = _mm_hadd_ps(halves, halves);
+    return _mm_cvtss_f32(_mm_hadd_ps(pairs, pairs));
+#else
+    q38_mad_f32_128(output, input, scale);
+    return q38_dot_f32_128(output, right);
 #endif
 }
 
@@ -670,8 +775,8 @@ static int q38_linear_core(Q38Model *model, int layer, float *qkv,
             float *state_column = state + column * Q38_LINEAR_HEAD_DIM;
             const float prediction = q38_dot_f32_128(state_column, k);
             const float delta = (v[column] - prediction) * beta[value_head];
-            q38_mad_f32_128(state_column, k, delta);
-            const float result = q38_dot_f32_128(state_column, q);
+            const float result = q38_mad_dot_f32_128(
+                state_column, k, delta, q);
             head_output[column] = result * query_scale;
         }
     }
@@ -941,8 +1046,7 @@ static int q38_batch_project(float *output, const float *input,
                              uint32_t count, uint64_t length,
                              const Q38GGUFTensor *weight)
 {
-    if (weight->type == Q38_GGML_Q4_K || weight->type == Q38_GGML_Q5_K ||
-        weight->type == Q38_GGML_Q6_K)
+    if (q38_matrix_type_q8_k(weight->type))
         return q38_tensor_gemm_q8_k(output, quantized, count, length, weight);
     return q38_tensor_gemm_f32(output, input, count, length, weight);
 }
@@ -1168,7 +1272,8 @@ static int q38_mtp_catchup(Q38Model *model, Q38BatchScratch *scratch,
     for (uint32_t token = 0; token < count; ++token) {
         float *embedding = scratch->hidden + (uint64_t)token * Q38_HIDDEN;
         float *input = scratch->wide0 + (uint64_t)token * (2u * Q38_HIDDEN);
-        if (!q38_tensor_row_f32(embedding, model->embedding, tokens[token])) return 0;
+        if (!q38_tensor_row_f32(embedding, model->mtp_embedding, tokens[token]))
+            return 0;
         q38_rmsnorm(input, embedding, model->mtp.enorm, Q38_HIDDEN);
         const float *previous = token == 0
             ? model->mtp_input_hidden
@@ -1215,16 +1320,69 @@ static int q38_alloc_scratch(Q38Model *model)
     return 1;
 }
 
+#if defined(__AVX2__)
+static uint64_t q38_available_memory(void)
+{
+    FILE *file = fopen("/proc/meminfo", "r");
+    if (file) {
+        char line[256];
+        while (fgets(line, sizeof(line), file)) {
+            unsigned long long kib = 0;
+            if (sscanf(line, "MemAvailable: %llu kB", &kib) == 1) {
+                fclose(file);
+                return kib <= UINT64_MAX / 1024u ? (uint64_t)kib * 1024u : 0;
+            }
+        }
+        fclose(file);
+    }
+
+    const long pages = sysconf(_SC_AVPHYS_PAGES);
+    const long page_size = sysconf(_SC_PAGESIZE);
+    if (pages <= 0 || page_size <= 0 ||
+        (uint64_t)pages > UINT64_MAX / (uint64_t)page_size) return 0;
+    return (uint64_t)pages * (uint64_t)page_size;
+}
+#endif
+
+static int q38_iq1_repack_enabled(void)
+{
+#if !defined(__AVX2__)
+    return 0;
+#else
+    const char *setting = getenv("QWEN38_REPACK");
+    if (setting && *setting) {
+        if (strcmp(setting, "0") == 0 || strcmp(setting, "false") == 0 ||
+            strcmp(setting, "no") == 0) return 0;
+        if (strcmp(setting, "1") == 0 || strcmp(setting, "true") == 0 ||
+            strcmp(setting, "yes") == 0) return 1;
+    }
+
+    const uint64_t minimum = UINT64_C(12) * 1024u * 1024u * 1024u;
+    if (q38_available_memory() < minimum) return 0;
+
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_AS, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY &&
+        (uint64_t)limit.rlim_cur < minimum) return 0;
+    return 1;
+#endif
+}
+
 Q38Model *q38_model_open_gguf(const char *path, uint32_t context_length)
 {
     if (!path || context_length == 0) return NULL;
     Q38Model *model = (Q38Model *)calloc(1, sizeof(*model));
     if (!model) return NULL;
     model->gguf.fd = -1;
+    model->mtp_gguf.fd = -1;
     model->context_length = context_length;
     if (!q38_gguf_open(&model->gguf, path) || !q38_bind_weights(model)) {
         q38_model_close(model);
         return NULL;
+    }
+    if (q38_iq1_repack_enabled() &&
+        !q38_prepare_iq1_s_repacks(&model->gguf)) {
+        fprintf(stderr,
+                "qwen38: IQ1 runtime repack unavailable; using packed weights\n");
     }
 
     const size_t conv_count = (size_t)Q38_RECURRENT_LAYERS * Q38_LINEAR_QKV_DIM * 3u;
@@ -1245,6 +1403,25 @@ Q38Model *q38_model_open_gguf(const char *path, uint32_t context_length)
         return NULL;
     }
     return model;
+}
+
+int q38_model_attach_mtp_gguf(Q38Model *model, const char *path)
+{
+    if (!model || !path || model->position != 0 || model->mtp_position != 0 ||
+        model->mtp_enabled || model->mtp_weights_loaded ||
+        model->mtp_gguf.fd >= 0) return 0;
+    if (!q38_gguf_open(&model->mtp_gguf, path) ||
+        !q38_bind_mtp_weights(model, &model->mtp_gguf)) {
+        memset(&model->layers[Q38_LAYERS], 0,
+               sizeof(model->layers[Q38_LAYERS]));
+        memset(&model->mtp, 0, sizeof(model->mtp));
+        model->mtp_embedding = NULL;
+        model->mtp_output = NULL;
+        model->mtp_weights_loaded = 0;
+        q38_gguf_close(&model->mtp_gguf);
+        return 0;
+    }
+    return 1;
 }
 
 void q38_model_reset(Q38Model *model)
@@ -1292,6 +1469,8 @@ void q38_model_close(Q38Model *model)
     free(model->scratch.alpha);
     free(model->scratch.logits);
     free(model->scratch.quantized);
+    q38_release_iq1_s_repacks(&model->gguf);
+    q38_gguf_close(&model->mtp_gguf);
     q38_gguf_close(&model->gguf);
     free(model);
 }
@@ -1383,6 +1562,11 @@ int q38_model_prefill(Q38Model *model, const uint32_t *tokens,
 int q38_model_enable_mtp(Q38Model *model)
 {
     if (!model || model->position != 0 || model->mtp_position != 0) return 0;
+    if (!model->mtp_weights_loaded) {
+        fprintf(stderr,
+                "qwen38: MTP weights are unavailable; attach the MTP GGUF first\n");
+        return 0;
+    }
     if (!model->checkpoint_conv_state)
         model->checkpoint_conv_state = (float *)malloc(
             q38_conv_state_count() * sizeof(float));
@@ -1407,7 +1591,8 @@ int q38_model_mtp_forward(Q38Model *model, uint32_t token_id,
     if (!model || !model->mtp_enabled || !logits || token_id >= Q38_VOCAB ||
         model->mtp_position >= model->context_length) return 0;
     Q38Scratch *scratch = &model->scratch;
-    if (!q38_tensor_row_f32(scratch->hidden, model->embedding, token_id)) return 0;
+    if (!q38_tensor_row_f32(scratch->hidden, model->mtp_embedding, token_id))
+        return 0;
     q38_rmsnorm(scratch->wide0, scratch->hidden, model->mtp.enorm, Q38_HIDDEN);
     q38_rmsnorm(scratch->wide0 + Q38_HIDDEN, model->mtp_input_hidden,
                 model->mtp.hnorm, Q38_HIDDEN);
@@ -1420,7 +1605,7 @@ int q38_model_mtp_forward(Q38Model *model, uint32_t token_id,
     memcpy(model->mtp_input_hidden, scratch->norm, Q38_HIDDEN * sizeof(float));
     if (!q38_quantize_input(scratch, scratch->norm, Q38_HIDDEN) ||
         !q38_project(scratch->logits, scratch->norm, scratch->quantized,
-                     Q38_HIDDEN, model->output)) return 0;
+                     Q38_HIDDEN, model->mtp_output)) return 0;
     ++model->mtp_position;
     *logits = scratch->logits;
     return 1;

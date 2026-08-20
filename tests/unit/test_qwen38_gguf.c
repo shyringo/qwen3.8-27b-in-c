@@ -98,8 +98,47 @@ static int write_fixture(const char *path)
     return fclose(file) == 0;
 }
 
+static int test_quantized_block_layouts(void)
+{
+    static const struct {
+        uint32_t type;
+        uint32_t elements;
+        uint32_t bytes;
+    } cases[] = {
+        { Q38_GGML_Q2_K, 256, 84 },
+        { Q38_GGML_Q3_K, 256, 110 },
+        { Q38_GGML_Q4_K, 256, 144 },
+        { Q38_GGML_Q5_K, 256, 176 },
+        { Q38_GGML_Q6_K, 256, 210 },
+        { Q38_GGML_IQ2_XXS, 256, 66 },
+        { Q38_GGML_IQ2_XS, 256, 74 },
+        { Q38_GGML_IQ3_XXS, 256, 98 },
+        { Q38_GGML_IQ1_S, 256, 50 },
+        { Q38_GGML_IQ4_NL, 32, 18 },
+        { Q38_GGML_IQ3_S, 256, 110 },
+        { Q38_GGML_IQ2_S, 256, 82 },
+        { Q38_GGML_IQ4_XS, 256, 136 },
+        { Q38_GGML_IQ1_M, 256, 56 },
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        CHECK(q38_ggml_block_elements(cases[i].type) == cases[i].elements,
+              "quantized block element count");
+        CHECK(q38_ggml_block_bytes(cases[i].type) == cases[i].bytes,
+              "quantized block byte count");
+    }
+    CHECK(q38_ggml_block_elements(UINT32_MAX) == 0,
+          "reject unknown block element count");
+    CHECK(q38_ggml_block_bytes(UINT32_MAX) == 0,
+          "reject unknown block byte count");
+    return 0;
+}
+
 int main(void)
 {
+    CHECK(test_quantized_block_layouts() == 0,
+          "quantized GGUF block layouts");
+
     const char *path = "build/test_qwen38_gguf.gguf";
     CHECK(write_fixture(path), "write synthetic GGUF");
 

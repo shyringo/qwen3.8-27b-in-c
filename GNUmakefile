@@ -49,7 +49,8 @@ $(BUILD)/%.o: %.c
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 $(GGUF_OBJ): include/qwen38/qwen38_gguf.h
-$(QUANT_OBJ): include/qwen38/qwen38_quant.h include/qwen38/qwen38_gguf.h
+$(QUANT_OBJ): include/qwen38/qwen38_quant.h include/qwen38/qwen38_gguf.h \
+	third_party/ggml-common.h
 $(MODEL_OBJ): include/qwen38/qwen38_model.h include/qwen38/qwen38_quant.h \
 	include/qwen38/qwen38_gguf.h
 $(TOKENIZER_OBJ): include/qwen38/qwen38_tokenizer.h \

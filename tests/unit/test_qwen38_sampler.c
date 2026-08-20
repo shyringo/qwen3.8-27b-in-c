@@ -23,6 +23,16 @@ int main(void)
     sampler.top_p = 0.01f;
     CHECK(q38_sample(&sampler, logits, 5, &token) && token == 2,
           "top-p retains best token");
+    uint8_t presence[5] = {0};
+    sampler.temperature = 0.0f;
+    sampler.top_k = 20;
+    sampler.presence_penalty = 2.0f;
+    sampler.presence = presence;
+    sampler.presence_size = 5;
+    q38_sampler_observe(&sampler, 2);
+    CHECK(q38_sample(&sampler, logits, 5, &token) && token == 3,
+          "presence penalty changes greedy selection");
+    q38_sampler_observe(&sampler, 9);
     CHECK(!q38_sample(&sampler, logits, 5, NULL),
           "missing output is rejected");
     puts("qwen38 sampler: ok");

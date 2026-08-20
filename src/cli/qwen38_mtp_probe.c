@@ -29,8 +29,8 @@ static uint32_t argmax(const float *logits, uint32_t count, float *value)
 
 int main(int argc, char **argv)
 {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s MODEL.gguf\n", argv[0]);
+    if (argc < 2 || argc > 3) {
+        fprintf(stderr, "usage: %s MODEL.gguf [MTP.gguf]\n", argv[0]);
         return 2;
     }
     static const uint32_t prompt[] = {
@@ -38,6 +38,10 @@ int main(int argc, char **argv)
         198, 248045, 74455, 198, 248068, 271, 248069, 271
     };
     Q38Model *model = q38_model_open_gguf(argv[1], 64);
+    if (model && argc == 3 && !q38_model_attach_mtp_gguf(model, argv[2])) {
+        q38_model_close(model);
+        model = NULL;
+    }
     if (!model || !q38_model_enable_mtp(model)) {
         q38_model_close(model);
         return 1;

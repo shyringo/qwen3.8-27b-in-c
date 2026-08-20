@@ -10,6 +10,7 @@ extern "C" {
 typedef struct Q38Model Q38Model;
 
 Q38Model *q38_model_open_gguf(const char *path, uint32_t context_length);
+int q38_model_attach_mtp_gguf(Q38Model *model, const char *path);
 void q38_model_close(Q38Model *model);
 void q38_model_reset(Q38Model *model);
 

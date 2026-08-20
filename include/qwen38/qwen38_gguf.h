@@ -39,6 +39,15 @@ typedef enum {
     Q38_GGML_Q4_K = 12,
     Q38_GGML_Q5_K = 13,
     Q38_GGML_Q6_K = 14,
+    Q38_GGML_IQ2_XXS = 16,
+    Q38_GGML_IQ2_XS = 17,
+    Q38_GGML_IQ3_XXS = 18,
+    Q38_GGML_IQ1_S = 19,
+    Q38_GGML_IQ4_NL = 20,
+    Q38_GGML_IQ3_S = 21,
+    Q38_GGML_IQ2_S = 22,
+    Q38_GGML_IQ4_XS = 23,
+    Q38_GGML_IQ1_M = 29,
     Q38_GGML_BF16 = 30
 } Q38GGMLType;
 
@@ -64,6 +73,7 @@ typedef struct {
     uint64_t offset;
     uint64_t nbytes;
     const uint8_t *data;
+    void *iq1_s_repack;
 } Q38GGUFTensor;
 
 typedef struct {

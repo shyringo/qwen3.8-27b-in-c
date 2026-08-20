@@ -1,4 +1,7 @@
-/* Qwen GPT-2/ByteLevel BPE tokenizer foundation.
+/* Adapted from kimi-k3-in-c under Apache License 2.0 and modified for
+ * Qwen3.8 GGUF tokenizers in this repository. See NOTICE and LICENSE.
+ *
+ * Qwen GPT-2/ByteLevel BPE tokenizer foundation.
  *
  * The caller supplies the vocabulary, merge ranks and added tokens from GGUF.
  * Added control and user-defined tokens remain atomic during encode/decode.

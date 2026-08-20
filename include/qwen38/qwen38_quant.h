@@ -35,7 +35,8 @@ int q38_tensor_dot_row_f32(float *output, const float *input,
 int q38_tensor_gemv_f32(float *output, const float *input,
                         const Q38GGUFTensor *tensor);
 
-/* Integer dot-product path for Q4_K, Q5_K, and Q6_K matrices. */
+/* Integer dot-product path for supported K-quant and importance-quantized
+ * matrices. */
 int q38_tensor_gemv_q8_k(float *output, const Q38Q8KBlock *input,
                          uint64_t input_length,
                          const Q38GGUFTensor *tensor);
@@ -48,6 +49,11 @@ int q38_tensor_gemm_f32(float *output, const float *input,
 int q38_tensor_gemm_q8_k(float *output, const Q38Q8KBlock *input,
                          uint32_t batch_size, uint64_t input_length,
                          const Q38GGUFTensor *tensor);
+
+/* Build and release optional SIMD-friendly IQ1_S views. The GGUF mapping
+ * remains authoritative and is never modified. */
+int q38_prepare_iq1_s_repacks(Q38GGUF *gguf);
+void q38_release_iq1_s_repacks(Q38GGUF *gguf);
 
 #ifdef __cplusplus
 }

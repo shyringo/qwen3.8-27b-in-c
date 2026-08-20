@@ -16,5 +16,6 @@ exec "$SCRIPT_DIR/chat.sh" \
     --prompt "$PROMPT" \
     --no-thinking \
     --temperature 0 \
+    --presence-penalty 0 \
     --max-tokens "$TOKENS" \
     "$@"

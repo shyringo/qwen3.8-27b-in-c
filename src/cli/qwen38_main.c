@@ -19,6 +19,7 @@
 
 typedef struct {
     const char *model;
+    const char *mtp_model;
     const char *prompt;
     const char *prompt_file;
     const char *system;
@@ -32,6 +33,7 @@ typedef struct {
     uint32_t top_k;
     float temperature;
     float top_p;
+    float presence_penalty;
 } Q38Options;
 
 #define Q38_TURN_TAIL_CAPACITY 16u
@@ -68,7 +70,9 @@ static void q38_usage(const char *program)
         "  --temperature N     0 for greedy; default: 1.0 / direct 0.7\n"
         "  --top-k N           sample from the best N tokens (default: 20)\n"
         "  --top-p N           nucleus probability; default: 0.95 / direct 0.8\n"
+        "  --presence-penalty N  penalize tokens already present; default: 0 / direct 1.5\n"
         "  --mtp               enable experimental greedy MTP verification\n"
+        "  --mtp-model PATH    MTP sidecar GGUF for split checkpoints\n"
         "  --mtp-depth N       MTP verification depth (default: 3)\n"
         "  --seed N            sampling seed\n", program);
 }
@@ -108,10 +112,16 @@ static int q38_options(int argc, char **argv, Q38Options *options)
     options->top_k = 20;
     options->temperature = 1.0f;
     options->top_p = 0.95f;
+    options->presence_penalty = 0.0f;
     int temperature_set = 0;
     int top_p_set = 0;
+    int presence_penalty_set = 0;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--model") == 0 && i + 1 < argc) options->model = argv[++i];
+        else if (strcmp(argv[i], "--mtp-model") == 0 && i + 1 < argc) {
+            options->mtp_model = argv[++i];
+            options->mtp = 1;
+        }
         else if (strcmp(argv[i], "--prompt") == 0 && i + 1 < argc) options->prompt = argv[++i];
         else if (strcmp(argv[i], "--prompt-file") == 0 && i + 1 < argc) options->prompt_file = argv[++i];
         else if (strcmp(argv[i], "--system") == 0 && i + 1 < argc) options->system = argv[++i];
@@ -141,6 +151,17 @@ static int q38_options(int argc, char **argv, Q38Options *options)
                 options->top_p <= 0.0f ||
                 options->top_p > 1.0f) return 0;
             top_p_set = 1;
+        } else if (strcmp(argv[i], "--presence-penalty") == 0 &&
+                   i + 1 < argc) {
+            char *end = NULL;
+            const char *text = argv[++i];
+            errno = 0;
+            options->presence_penalty = strtof(text, &end);
+            if (errno || end == text || *end ||
+                !isfinite(options->presence_penalty) ||
+                options->presence_penalty < 0.0f ||
+                options->presence_penalty > 2.0f) return 0;
+            presence_penalty_set = 1;
         } else if (strcmp(argv[i], "--reasoning-effort") == 0 && i + 1 < argc) {
             const char *effort = argv[++i];
             if (strcmp(effort, "low") == 0)
@@ -163,7 +184,10 @@ static int q38_options(int argc, char **argv, Q38Options *options)
     if (!options->thinking) {
         if (!temperature_set) options->temperature = 0.7f;
         if (!top_p_set) options->top_p = 0.8f;
+        if (!presence_penalty_set) options->presence_penalty = 1.5f;
     }
+    if (options->mtp && !presence_penalty_set)
+        options->presence_penalty = 0.0f;
     return options->model && options->context > 0 && options->max_tokens > 0 &&
            !(options->prompt && options->prompt_file);
 }
@@ -289,6 +313,7 @@ static int q38_generate_mtp(Q38Model *model, Q38Tokenizer *tokenizer,
         free(batch);
         return 0;
     }
+    q38_sampler_observe(sampler, current);
     uint32_t generated = 0;
     double first_ready = 0.0;
     double last_ready = 0.0;
@@ -324,6 +349,7 @@ static int q38_generate_mtp(Q38Model *model, Q38Tokenizer *tokenizer,
         }
         for (uint32_t i = 0; ok && i < count; ++i) {
             current = batch[i];
+            q38_sampler_observe(sampler, current);
             if (current == eos) break;
             ok = q38_emit(tokenizer, current);
             if (ok) {
@@ -398,6 +424,7 @@ static char *q38_prompt(const char *user, const char *system,
 }
 
 static int q38_evaluate_text(Q38Model *model, Q38Tokenizer *tokenizer,
+                             Q38Sampler *sampler,
                              const char *text, const float **logits,
                              int *token_count, Q38TurnTail *tail)
 {
@@ -423,6 +450,10 @@ static int q38_evaluate_text(Q38Model *model, Q38Tokenizer *tokenizer,
         ok = 0;
     }
     if (ok) ok = q38_model_prefill(model, tokens, count, logits);
+    if (ok) {
+        for (uint32_t i = 0; i < count; ++i)
+            q38_sampler_observe(sampler, tokens[i]);
+    }
     free(tokens);
     if (ok && tail) tail->count = 0;
     if (ok && token_count) *token_count = (int)count;
@@ -440,8 +471,8 @@ static int q38_generate(Q38Model *model, Q38Tokenizer *tokenizer,
     if (!prompt) return 0;
     const float *logits = NULL;
     int prompt_tokens = 0;
-    const int prompt_ok = q38_evaluate_text(model, tokenizer, prompt, &logits,
-                                             &prompt_tokens, tail);
+    const int prompt_ok = q38_evaluate_text(model, tokenizer, sampler, prompt,
+                                             &logits, &prompt_tokens, tail);
     free(prompt);
     if (!prompt_ok) return 0;
     if (options->thinking) {
@@ -466,6 +497,7 @@ static int q38_generate(Q38Model *model, Q38Tokenizer *tokenizer,
             ok = 0;
             break;
         }
+        q38_sampler_observe(sampler, token);
         const double ready = q38_now();
         if (token == eos) {
             ok = q38_defer_turn(tokenizer, tail, 0, 0, 0);
@@ -518,6 +550,11 @@ int main(int argc, char **argv)
                 "qwen38: --mtp requires greedy decoding; add --temperature 0\n");
         return 2;
     }
+    if (options.mtp && options.presence_penalty != 0.0f) {
+        fprintf(stderr,
+                "qwen38: --mtp requires --presence-penalty 0\n");
+        return 2;
+    }
 #if defined(_OPENMP)
     const char *threads = getenv("QWEN38_THREADS");
     if (threads && *threads) {
@@ -540,7 +577,16 @@ int main(int argc, char **argv)
         options.prompt = prompt_text;
     }
     Q38Tokenizer *tokenizer = q38_tokenizer_open_gguf(options.model);
-    Q38Model *model = q38_model_open_gguf(options.model, options.context);
+    Q38Model *model = tokenizer
+        ? q38_model_open_gguf(options.model, options.context)
+        : NULL;
+    if (model && options.mtp_model &&
+        !q38_model_attach_mtp_gguf(model, options.mtp_model)) {
+        fprintf(stderr, "qwen38: unable to load MTP model %s\n",
+                options.mtp_model);
+        q38_model_close(model);
+        model = NULL;
+    }
     if (!tokenizer || !model) {
         q38_tokenizer_close(tokenizer);
         q38_model_close(model);
@@ -562,11 +608,23 @@ int main(int argc, char **argv)
         free(prompt_text);
         return 1;
     }
+    const uint32_t vocabulary_size = q38_model_vocab_size(model);
+    uint8_t *presence = (uint8_t *)calloc(vocabulary_size, 1u);
+    if (!presence) {
+        fprintf(stderr, "qwen38: unable to allocate sampler state\n");
+        q38_tokenizer_close(tokenizer);
+        q38_model_close(model);
+        free(prompt_text);
+        return 1;
+    }
     Q38Sampler sampler;
     q38_sampler_init(&sampler, options.seed);
     sampler.temperature = options.temperature;
     sampler.top_k = options.top_k;
     sampler.top_p = options.top_p;
+    sampler.presence_penalty = options.presence_penalty;
+    sampler.presence = presence;
+    sampler.presence_size = vocabulary_size;
     int ok = 1;
     if (options.prompt) {
         ok = q38_generate(model, tokenizer, &sampler, &options,
@@ -591,10 +649,14 @@ int main(int argc, char **argv)
                 break;
             if (strcmp(line, "/reset") == 0) {
                 q38_model_reset(model);
+                memset(presence, 0, vocabulary_size);
                 q38_sampler_init(&sampler, options.seed);
                 sampler.temperature = options.temperature;
                 sampler.top_k = options.top_k;
                 sampler.top_p = options.top_p;
+                sampler.presence_penalty = options.presence_penalty;
+                sampler.presence = presence;
+                sampler.presence_size = vocabulary_size;
                 first_turn = 1;
                 tail.count = 0;
                 puts("Conversation reset.");
@@ -608,6 +670,7 @@ int main(int argc, char **argv)
         }
         free(line);
     }
+    free(presence);
     q38_model_close(model);
     q38_tokenizer_close(tokenizer);
     free(prompt_text);

@@ -13,6 +13,16 @@ The NFC normalization tables in `third_party/tok_nfc_data.h` are generated
 from the Unicode 9.0.0 Character Database. The Unicode data license is
 included in `third_party/UNICODE-LICENSE.txt`.
 
+GGUF, the Q2_K through Q6_K and Q8_0/Q8_K encodings, and IQ tensor formats are
+compatibility formats published by the ggml and llama.cpp projects. The fixed
+IQ codebook tables in `third_party/ggml-common.h`, along with packed low-bit decoding and
+kernel techniques used in `src/qwen38/qwen38_quant.c`, are adapted from ggml
+revision `8c63e70982c95ceb862e3a1073a2c1beef75d60a` under its MIT license,
+included as `third_party/GGML-LICENSE.txt`. The bounded GGUF parser, runtime
+integration, row scheduling, and multi-token interfaces are project-local.
+ggml and llama.cpp are not linked or invoked at runtime. A fixed llama.cpp
+revision is also used as an external correctness oracle during validation.
+
 The Qwen3.8 model graph, GGUF reader, quantized CPU kernels, batching,
 recurrent state management, sampling, command-line runtime and MTP
 verification in this repository are native project code. No external
@@ -20,10 +30,11 @@ inference engine is downloaded or invoked at runtime.
 
 ## Model
 
-[Qwen3.8-27B](https://github.com/QwenLM/Qwen3.8) is released by the Qwen
-team under Apache License 2.0.
+[Qwen3.8-27B](https://www.modelscope.cn/models/Qwen/Qwen3.8-27B) is released by
+the Qwen team under Apache License 2.0. The official open-model project is
+[Qwen3](https://github.com/QwenLM/Qwen3).
 
-The default GGUF is published by
+The pinned GGUFs are published by
 [Unsloth on ModelScope](https://www.modelscope.cn/models/unsloth/Qwen3.8-27B-GGUF).
 
 Model weights are downloaded into the user's cache and are not redistributed

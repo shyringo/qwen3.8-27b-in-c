@@ -18,6 +18,15 @@ static const char *type_name(uint32_t type)
     case Q38_GGML_Q4_K: return "Q4_K";
     case Q38_GGML_Q5_K: return "Q5_K";
     case Q38_GGML_Q6_K: return "Q6_K";
+    case Q38_GGML_IQ2_XXS: return "IQ2_XXS";
+    case Q38_GGML_IQ2_XS: return "IQ2_XS";
+    case Q38_GGML_IQ3_XXS: return "IQ3_XXS";
+    case Q38_GGML_IQ1_S: return "IQ1_S";
+    case Q38_GGML_IQ4_NL: return "IQ4_NL";
+    case Q38_GGML_IQ3_S: return "IQ3_S";
+    case Q38_GGML_IQ2_S: return "IQ2_S";
+    case Q38_GGML_IQ4_XS: return "IQ4_XS";
+    case Q38_GGML_IQ1_M: return "IQ1_M";
     case Q38_GGML_BF16: return "BF16";
     default: return "UNKNOWN";
     }
@@ -99,12 +108,89 @@ static int require_layer(const Q38GGUF *gguf, int layer)
     return ok;
 }
 
+static int require_mtp_layer(const Q38GGUF *gguf)
+{
+    int ok = 1;
+    ok &= require_shape(gguf, "blk.64.attn_norm.weight", 5120, 0);
+    ok &= require_shape(gguf, "blk.64.post_attention_norm.weight", 5120, 0);
+    ok &= require_shape(gguf, "blk.64.ffn_gate.weight", 5120, 17408);
+    ok &= require_shape(gguf, "blk.64.ffn_up.weight", 5120, 17408);
+    ok &= require_shape(gguf, "blk.64.ffn_down.weight", 17408, 5120);
+    ok &= require_shape(gguf, "blk.64.attn_q.weight", 5120, 12288);
+    ok &= require_shape(gguf, "blk.64.attn_k.weight", 5120, 1024);
+    ok &= require_shape(gguf, "blk.64.attn_v.weight", 5120, 1024);
+    ok &= require_shape(gguf, "blk.64.attn_output.weight", 6144, 5120);
+    ok &= require_shape(gguf, "blk.64.attn_q_norm.weight", 256, 0);
+    ok &= require_shape(gguf, "blk.64.attn_k_norm.weight", 256, 0);
+    ok &= require_shape(gguf, "blk.64.nextn.eh_proj.weight", 10240, 5120);
+    ok &= require_shape(gguf, "blk.64.nextn.enorm.weight", 5120, 0);
+    ok &= require_shape(gguf, "blk.64.nextn.hnorm.weight", 5120, 0);
+    ok &= require_shape(gguf, "blk.64.nextn.shared_head_norm.weight", 5120, 0);
+    return ok;
+}
+
+static int require_tokenizer(const Q38GGUF *gguf)
+{
+    int ok = 1;
+    const Q38GGUFMeta *tokens = q38_gguf_find_meta(gguf,
+                                                   "tokenizer.ggml.tokens");
+    const Q38GGUFMeta *merges = q38_gguf_find_meta(gguf,
+                                                   "tokenizer.ggml.merges");
+    if (!tokens || tokens->type != Q38_GGUF_META_ARRAY ||
+        tokens->array_type != Q38_GGUF_META_STRING ||
+        tokens->count != 248320) {
+        fprintf(stderr, "checkpoint contract failed: tokenizer vocabulary\n");
+        ok = 0;
+    }
+    if (!merges || merges->type != Q38_GGUF_META_ARRAY ||
+        merges->array_type != Q38_GGUF_META_STRING || merges->count == 0) {
+        fprintf(stderr, "checkpoint contract failed: tokenizer merges\n");
+        ok = 0;
+    }
+    return ok;
+}
+
 static int inspect_contract(const Q38GGUF *gguf)
 {
     Q38GGUFString architecture;
     int ok = q38_gguf_meta_string(gguf, "general.architecture", &architecture) &&
              string_is(architecture, "qwen35");
     if (!ok) fprintf(stderr, "checkpoint contract failed: architecture is not qwen35\n");
+    uint32_t block_count = 0;
+    uint32_t nextn_layers = 0;
+    const int has_base_layer =
+        q38_gguf_find_tensor(gguf, "blk.0.attn_norm.weight") != NULL;
+    (void)q38_gguf_meta_u32(gguf, "qwen35.block_count", &block_count);
+    (void)q38_gguf_meta_u32(gguf, "qwen35.nextn_predict_layers",
+                            &nextn_layers);
+
+    if (block_count == 64 && nextn_layers == 0 && has_base_layer) {
+        ok &= require_u32(gguf, "qwen35.embedding_length", 5120);
+        ok &= require_u32(gguf, "qwen35.feed_forward_length", 17408);
+        ok &= require_u32(gguf, "qwen35.attention.head_count", 24);
+        ok &= require_u32(gguf, "qwen35.attention.head_count_kv", 4);
+        ok &= require_u32(gguf, "qwen35.full_attention_interval", 4);
+        ok &= require_u32(gguf, "qwen35.ssm.state_size", 128);
+        ok &= require_u32(gguf, "qwen35.ssm.group_count", 16);
+        ok &= require_u32(gguf, "qwen35.ssm.time_step_rank", 48);
+        ok &= require_u32(gguf, "qwen35.ssm.inner_size", 6144);
+        ok &= require_shape(gguf, "token_embd.weight", 5120, 248320);
+        ok &= require_shape(gguf, "output_norm.weight", 5120, 0);
+        ok &= require_shape(gguf, "output.weight", 5120, 248320);
+        for (int layer = 0; layer < 64; ++layer)
+            ok &= require_layer(gguf, layer);
+        ok &= require_tokenizer(gguf);
+        return ok;
+    }
+
+    if (block_count == 65 && nextn_layers == 1 && !has_base_layer) {
+        ok &= require_shape(gguf, "token_embd.weight", 5120, 248320);
+        ok &= require_shape(gguf, "output_norm.weight", 5120, 0);
+        ok &= require_shape(gguf, "output.weight", 5120, 248320);
+        ok &= require_mtp_layer(gguf);
+        return ok;
+    }
+
     ok &= require_u32(gguf, "qwen35.block_count", 65);
     ok &= require_u32(gguf, "qwen35.nextn_predict_layers", 1);
     ok &= require_u32(gguf, "qwen35.embedding_length", 5120);
@@ -120,6 +206,7 @@ static int inspect_contract(const Q38GGUF *gguf)
     ok &= require_shape(gguf, "output_norm.weight", 5120, 0);
     ok &= require_shape(gguf, "output.weight", 5120, 248320);
     for (int layer = 0; layer < 64; ++layer) ok &= require_layer(gguf, layer);
+    ok &= require_mtp_layer(gguf);
 
     const Q38GGUFMeta *tokens = q38_gguf_find_meta(gguf, "tokenizer.ggml.tokens");
     const Q38GGUFMeta *merges = q38_gguf_find_meta(gguf, "tokenizer.ggml.merges");

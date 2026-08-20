@@ -136,12 +136,21 @@ uint32_t q38_ggml_block_elements(uint32_t type)
     case Q38_GGML_Q4_1:
     case Q38_GGML_Q5_0:
     case Q38_GGML_Q5_1:
-    case Q38_GGML_Q8_0: return 32;
+    case Q38_GGML_Q8_0:
+    case Q38_GGML_IQ4_NL: return 32;
     case Q38_GGML_Q2_K:
     case Q38_GGML_Q3_K:
     case Q38_GGML_Q4_K:
     case Q38_GGML_Q5_K:
-    case Q38_GGML_Q6_K: return 256;
+    case Q38_GGML_Q6_K:
+    case Q38_GGML_IQ2_XXS:
+    case Q38_GGML_IQ2_XS:
+    case Q38_GGML_IQ3_XXS:
+    case Q38_GGML_IQ1_S:
+    case Q38_GGML_IQ3_S:
+    case Q38_GGML_IQ2_S:
+    case Q38_GGML_IQ4_XS:
+    case Q38_GGML_IQ1_M: return 256;
     default: return 0;
     }
 }
@@ -157,11 +166,20 @@ uint32_t q38_ggml_block_bytes(uint32_t type)
     case Q38_GGML_Q5_0: return 22;
     case Q38_GGML_Q5_1: return 24;
     case Q38_GGML_Q8_0: return 34;
+    case Q38_GGML_IQ4_NL: return 18;
     case Q38_GGML_Q2_K: return 84;
     case Q38_GGML_Q3_K: return 110;
     case Q38_GGML_Q4_K: return 144;
     case Q38_GGML_Q5_K: return 176;
     case Q38_GGML_Q6_K: return 210;
+    case Q38_GGML_IQ2_XXS: return 66;
+    case Q38_GGML_IQ2_XS: return 74;
+    case Q38_GGML_IQ3_XXS: return 98;
+    case Q38_GGML_IQ1_S: return 50;
+    case Q38_GGML_IQ3_S: return 110;
+    case Q38_GGML_IQ2_S: return 82;
+    case Q38_GGML_IQ4_XS: return 136;
+    case Q38_GGML_IQ1_M: return 56;
     default: return 0;
     }
 }

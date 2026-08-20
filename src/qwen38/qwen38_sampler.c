@@ -26,7 +26,26 @@ void q38_sampler_init(Q38Sampler *sampler, uint64_t seed)
     sampler->state = seed ? seed : UINT64_C(0x9e3779b97f4a7c15);
     sampler->temperature = 1.0f;
     sampler->top_p = 0.95f;
+    sampler->presence_penalty = 0.0f;
     sampler->top_k = 20;
+    sampler->presence = NULL;
+    sampler->presence_size = 0;
+}
+
+void q38_sampler_observe(Q38Sampler *sampler, uint32_t token)
+{
+    if (sampler && sampler->presence && token < sampler->presence_size)
+        sampler->presence[token] = 1;
+}
+
+static float q38_adjusted_logit(const Q38Sampler *sampler,
+                                const float *logits, uint32_t token)
+{
+    const float value = logits[token];
+    if (sampler->presence_penalty == 0.0f || !sampler->presence ||
+        token >= sampler->presence_size || !sampler->presence[token])
+        return value;
+    return value - sampler->presence_penalty;
 }
 
 int q38_sample(Q38Sampler *sampler, const float *logits,
@@ -36,7 +55,8 @@ int q38_sample(Q38Sampler *sampler, const float *logits,
     if (sampler->temperature <= 0.0f || sampler->top_k <= 1) {
         uint32_t best = 0;
         for (uint32_t id = 1; id < vocabulary_size; ++id) {
-            if (logits[id] > logits[best]) best = id;
+            if (q38_adjusted_logit(sampler, logits, id) >
+                q38_adjusted_logit(sampler, logits, best)) best = id;
         }
         *token = best;
         return 1;
@@ -52,14 +72,15 @@ int q38_sample(Q38Sampler *sampler, const float *logits,
         candidates[i].probability = 0.0f;
     }
     for (uint32_t id = 0; id < vocabulary_size; ++id) {
-        if (logits[id] <= candidates[count - 1].logit) continue;
+        const float logit = q38_adjusted_logit(sampler, logits, id);
+        if (logit <= candidates[count - 1].logit) continue;
         uint32_t slot = count - 1;
-        while (slot > 0 && logits[id] > candidates[slot - 1].logit) {
+        while (slot > 0 && logit > candidates[slot - 1].logit) {
             candidates[slot] = candidates[slot - 1];
             --slot;
         }
         candidates[slot].id = id;
-        candidates[slot].logit = logits[id];
+        candidates[slot].logit = logit;
     }
     float total = 0.0f;
     for (uint32_t i = 0; i < count; ++i) {

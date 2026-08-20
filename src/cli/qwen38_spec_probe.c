@@ -25,6 +25,8 @@ static const uint32_t prompt[] = {
     198, 248045, 74455, 198, 248068, 271, 248069, 271
 };
 
+static const char *mtp_path;
+
 static int baseline(const char *path, uint32_t *tokens, uint32_t count)
 {
     Q38Model *model = q38_model_open_gguf(path, 64);
@@ -43,6 +45,10 @@ static int baseline(const char *path, uint32_t *tokens, uint32_t count)
 static int speculative(const char *path, uint32_t *tokens, uint32_t count)
 {
     Q38Model *model = q38_model_open_gguf(path, 64);
+    if (model && mtp_path && !q38_model_attach_mtp_gguf(model, mtp_path)) {
+        q38_model_close(model);
+        model = NULL;
+    }
     const float *logits = NULL;
     int ok = model && q38_model_enable_mtp(model) && q38_model_prefill(
         model, prompt, (uint32_t)(sizeof(prompt) / sizeof(prompt[0])), &logits);
@@ -70,6 +76,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: %s MODEL.gguf [--spec-only]\n", argv[0]);
         return 2;
     }
+    if (argc == 3 && strcmp(argv[2], "--spec-only") != 0)
+        mtp_path = argv[2];
     if (argc == 3 && strcmp(argv[2], "--spec-only") == 0) {
         uint32_t tokens[3];
         if (!speculative(argv[1], tokens, 3)) return 1;
