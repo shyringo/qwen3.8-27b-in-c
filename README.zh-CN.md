@@ -8,9 +8,9 @@
 <table align="center">
   <tr>
     <td align="center"><strong>27B</strong><br>参数量</td>
+    <td align="center"><strong>2.52 token/s</strong><br>32 GB x86 笔记本最优速度<br><strong>0.397 s/token</strong></td>
     <td align="center"><strong>最低 8 GB 内存</strong><br>已通过受限运行验证</td>
-    <td align="center"><strong>0.397 s/token</strong><br>32 GB x86 笔记本最优 TPOT<br><strong>2.52 token/s</strong></td>
-    <td align="center"><strong>100% 逐 bit 一致</strong><br>同一 GGUF oracle logits<br>推理引擎零额外损失</td>
+    <td align="center"><strong>只用 CPU</strong><br>无需 GPU 或 Python</td>
   </tr>
 </table>
 
