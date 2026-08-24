@@ -10,7 +10,7 @@
     <td align="center"><strong>27B</strong><br>parameters</td>
     <td align="center"><strong>2.52 token/s</strong><br>best on a 32 GB x86 laptop<br><strong>0.397 s/token</strong></td>
     <td align="center"><strong>8 GB RAM</strong><br>minimum tested limit</td>
-    <td align="center"><strong>CPU only</strong><br>no GPU or Python</td>
+    <td align="center"><strong>100% preserved</strong><br>same-model-file baseline results<br>before and after optimization</td>
   </tr>
 </table>
 
