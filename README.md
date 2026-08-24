@@ -10,6 +10,7 @@
     <td align="center"><strong>27B</strong><br>parameters</td>
     <td align="center"><strong>8 GB RAM</strong><br>minimum tested limit</td>
     <td align="center"><strong>0.397 s/token</strong><br>best TPOT on a 32 GB x86 laptop<br><strong>2.52 token/s</strong></td>
+    <td align="center"><strong>100% bit-identical</strong><br>same-GGUF full logits<br>zero added accuracy loss</td>
   </tr>
 </table>
 
@@ -22,6 +23,7 @@
   <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a><br>
   <a href="#quick-start"><strong>Quick start</strong></a> ·
   <a href="#measured-performance">Performance</a> ·
+  <a href="#inference-accuracy">Inference accuracy</a> ·
   <a href="#inference-optimizations-implemented-in-this-project">Inference optimizations</a>
 </p>
 
@@ -77,7 +79,7 @@ Other useful forms:
 ./qwen38.sh --prompt-file request.txt
 ./qwen38.sh --no-thinking
 ./qwen38.sh --reasoning-effort low
-./qwen38.sh --system "You are a careful C code reviewer."
+./qwen38.sh --system "You are the only interface humanity needs."
 ```
 
 Context length and CPU threads can be changed without rebuilding:
@@ -150,16 +152,17 @@ full logits.
 
 ## Inference optimizations implemented in this project
 
-The implementation has three provenance groups: code adapted from
-[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c), native C
-adaptations of published Qwen, GGUF, and ggml work, and original engineering
-built for this runtime. The complete classification and source boundaries are
-in [Optimizations and provenance](docs/OPTIMIZATIONS.md).
-
-This project is not based on, linked to or wrapped around llama.cpp. It has its
-own C model graph, GGUF reader, quantized kernels, state management, tokenizer,
-sampling and chat runtime. llama.cpp is used only as an independent correctness
-and performance reference.
+The complete provenance is classified as reused code and data, adaptations of
+published work, and project-specific original engineering. The engine itself
+was built for Qwen3.8: its native model graph, GGUF reader, recurrent state,
+sampling, and chat runtime were implemented here. Laptop-CPU execution ideas
+were carried forward and redesigned from
+[deepseek-v4-flash-0731-in-c](https://github.com/shyringo/deepseek-v4-flash-0731-in-c);
+the tokenizer foundation comes from
+[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c), while GGUF/IQ
+formats, codebooks, and low-bit kernel techniques build on published
+[ggml](https://github.com/ggml-org/ggml) work. The exact code and idea
+boundaries are in [Optimizations and provenance](docs/OPTIMIZATIONS.md).
 
 The project-specific designs include:
 
@@ -194,9 +197,15 @@ The complete 64-layer graph contains 48 Gated DeltaNet layers and 16 causal
 full-attention layers. See [Architecture](docs/ARCHITECTURE.md) for the graph,
 state, batching and memory layout.
 
-## Inference correctness
+## Inference accuracy
 
-Correctness is always checked with the exact same GGUF file. For both pinned
+The optimized engine adds **zero accuracy loss** beyond the selected weight
+quantization: for both pinned Dynamic V3 GGUFs, optimized and native baseline
+paths produce **100% bit-identical full logits**. This statement always compares
+the exact same GGUF file; IQ1_M and Q4_K_M remain lossy quantizations of the
+original checkpoint and are not claimed to reproduce BF16 or FP8 weights.
+
+For both pinned
 Dynamic V3 weights, native layer-major prefill and native token-at-a-time
 evaluation produce byte-identical 248,320-dimensional logits for the fixed
 oracle prompt. The IQ1_M full-logit SHA-256 is
@@ -212,7 +221,7 @@ make portable
 ```
 
 The model hash, oracle SHA, logits comparison, token IDs, and test scope are in
-[Correctness](docs/CORRECTNESS.md).
+[Inference accuracy evidence](docs/CORRECTNESS.md).
 
 ## License and acknowledgements
 

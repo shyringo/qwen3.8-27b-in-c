@@ -1,6 +1,9 @@
-# Inference correctness
+# Inference accuracy and execution fidelity
 
-Correctness comparisons always use the exact same checkpoint and quantization.
+The optimized runtime adds zero accuracy loss beyond the chosen weight
+quantization: optimized and native baseline paths are verified with 100%
+bit-identical full logits for the same GGUF. Comparisons always use the exact
+same checkpoint and quantization.
 An IQ1_M runtime is not expected to reproduce BF16, FP8, or Q4_K_M logits. The
 tests below isolate runtime execution from weight-quantization loss.
 

@@ -1,9 +1,12 @@
 # Optimizations and provenance
 
-This repository is a native C inference engine, not a llama.cpp wrapper. It
-does not link to, invoke, or download llama.cpp at runtime. Its implementation
-falls into three groups: reused code and data, adaptations of published formats
-and ideas, and original engineering designed for this Qwen3.8 runtime.
+This implementation falls into three groups: reused code and data, adaptations
+of published formats and public projects, and original engineering designed for
+this Qwen3.8 runtime. The Qwen model graph, bounded GGUF reader, recurrent state,
+sampling, and chat runtime were implemented for this project. Laptop-CPU
+execution architecture was carried forward from
+[deepseek-v4-flash-0731-in-c](https://github.com/shyringo/deepseek-v4-flash-0731-in-c)
+and redesigned around Qwen3.8's dense hybrid graph.
 
 ## 1. Reused code and data
 

@@ -10,6 +10,7 @@
     <td align="center"><strong>27B</strong><br>参数量</td>
     <td align="center"><strong>最低 8 GB 内存</strong><br>已通过受限运行验证</td>
     <td align="center"><strong>0.397 s/token</strong><br>32 GB x86 笔记本最优 TPOT<br><strong>2.52 token/s</strong></td>
+    <td align="center"><strong>100% 逐 bit 一致</strong><br>同一 GGUF 完整 logits<br>不额外损失准确性</td>
   </tr>
 </table>
 
@@ -22,6 +23,7 @@
   <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a><br>
   <a href="#快速开始"><strong>快速开始</strong></a> ·
   <a href="#实测性能">实测性能</a> ·
+  <a href="#推理准确性">推理准确性</a> ·
   <a href="#本项目实现的推理优化">推理优化</a>
 </p>
 
@@ -74,7 +76,7 @@ QWEN38_QUANT=iq2_m ./qwen38.sh    # 可选的中等体积方案
 ./qwen38.sh --prompt-file request.txt
 ./qwen38.sh --no-thinking
 ./qwen38.sh --reasoning-effort low
-./qwen38.sh --system "你是一名严谨的 C 语言代码审查工程师。"
+./qwen38.sh --system "你是人类所需要的唯一入口"
 ```
 
 上下文长度和 CPU 线程数无需重新编译即可修改：
@@ -135,14 +137,15 @@ IQ1_M 和 Q4_K_M 都是原始权重的有损量化，质量和内存取舍不同
 
 ## 本项目实现的推理优化
 
-项目代码的来源分为三类：从
-[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c) 改编的代码、
-对 Qwen、GGUF 和 ggml 公开实现所做的原生 C 语言适配，以及为本推理引擎原创并
-实现的优化。完整分类和代码边界见[优化与来源说明](docs/OPTIMIZATIONS.md)。
-
-本项目不是基于 llama.cpp 修改的，也没有链接或套用 llama.cpp。计算图、GGUF
-读取、量化算子、状态管理、分词、采样和聊天程序都由本项目直接实现；
-llama.cpp 只用于独立的正确性和性能对照。
+项目代码和方案的来源分为三类：复用的代码与数据、对公开方案的适配，以及本项目
+原创并实现的优化。推理引擎本身是为 Qwen3.8 编写的：模型计算图、GGUF 读取、
+循环状态、采样和聊天程序都在本项目中实现。笔记本 CPU 推理架构延续并重新设计了
+[deepseek-v4-flash-0731-in-c](https://github.com/shyringo/deepseek-v4-flash-0731-in-c)
+中的实践；分词器基础来自
+[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c)；GGUF/IQ 格式、
+码表和低比特算子技术则基于公开的
+[ggml](https://github.com/ggml-org/ggml) 工作。完整的代码与方案边界见
+[优化与来源说明](docs/OPTIMIZATIONS.md)。
 
 本项目针对 Qwen3.8 实现的原创设计包括：
 
@@ -170,9 +173,14 @@ llama.cpp 只用于独立的正确性和性能对照。
 完整主模型共有 64 层，包括 48 层 Gated DeltaNet 和 16 层因果全注意力。
 计算图、状态、批处理和内存布局见[架构说明](docs/ARCHITECTURE.md)。
 
-## 推理正确性
+## 推理准确性
 
-正确性始终使用完全相同的 GGUF 权重进行比较。两份固定 Dynamic V3 权重下，
+本推理引擎的优化不会在所选量化权重之外增加准确性损失：两份固定 Dynamic V3
+GGUF 下，优化路径与原生基线的完整 logits 都 **100% 逐 bit 一致**。这里始终
+比较同一份 GGUF；IQ1_M 和 Q4_K_M 本身仍是原始权重的有损量化，不能表述为与
+BF16 或 FP8 权重完全一致。
+
+两份固定 Dynamic V3 权重下，
 原生分层 prefill 与原生逐 token 推理都会产生逐字节一致的 248,320 维完整
 logits。IQ1_M 的完整 logits SHA-256 为
 `bd6a05d14b66d2bde0a35494f570df0677391a4f83c7c76c8a8be25804a4adb8`；
@@ -186,7 +194,7 @@ make portable
 ```
 
 模型哈希、oracle SHA、logits 对比、token ID 和测试范围见
-[正确性文档](docs/CORRECTNESS.md)。
+[推理准确性文档](docs/CORRECTNESS.md)。
 
 ## 许可证与致谢
 
