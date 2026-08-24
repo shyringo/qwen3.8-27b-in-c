@@ -10,7 +10,7 @@
     <td align="center"><strong>27B</strong><br>参数量</td>
     <td align="center"><strong>2.52 token/s</strong><br>32 GB x86 笔记本最优速度<br><strong>0.397 s/token</strong></td>
     <td align="center"><strong>最低 8 GB 内存</strong><br>已通过受限运行验证</td>
-    <td align="center"><strong>100% 保持</strong><br>同一模型文件的基准推理结果<br>优化前后完全一致</td>
+    <td align="center"><strong>准确性无损</strong><br>推理加速不改变结果<br>加速前后完全一致</td>
   </tr>
 </table>
 
