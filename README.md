@@ -10,7 +10,7 @@
     <td align="center"><strong>27B</strong><br>parameters</td>
     <td align="center"><strong>8 GB RAM</strong><br>minimum tested limit</td>
     <td align="center"><strong>0.397 s/token</strong><br>best TPOT on a 32 GB x86 laptop<br><strong>2.52 token/s</strong></td>
-    <td align="center"><strong>100% bit-identical</strong><br>same-GGUF full logits<br>zero added accuracy loss</td>
+    <td align="center"><strong>100% bit-identical</strong><br>same-GGUF oracle logits<br>zero runtime accuracy loss</td>
   </tr>
 </table>
 
