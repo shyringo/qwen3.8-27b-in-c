@@ -130,6 +130,8 @@ not estimates:
 | Dynamic V3 IQ1_M, four-token batched forward | - | 0.253 s/token | 3.95 token/s | - |
 | Dynamic V3 Q4_K_M, 32-token resident chat request | 4.359 s | 0.531 s/token | 1.88 token/s | 14.49 GiB |
 
+Ran it on different hardware? [Share a reproducible benchmark](https://github.com/shyringo/qwen3.8-27b-in-c/issues/new?template=benchmark_result.yml).
+
 Reference environment: Intel Core i5-1340P laptop, 32 GB host memory, Windows
 11 with WSL2 Ubuntu 22.04.5 (24 GiB guest limit), GCC 11.4, 4,096-token
 context, 12 OpenMP threads, exact SiLU, pinned weights on the WSL2 ext4

@@ -121,6 +121,8 @@ QWEN38_THREADS=6 ./qwen38.sh
 | Dynamic V3 IQ1_M，4-token 批处理 | - | 0.253 s/token | 3.95 token/s | - |
 | Dynamic V3 Q4_K_M，常驻进程生成 32 token | 4.359 s | 0.531 s/token | 1.88 token/s | 14.49 GiB |
 
+如果你使用了不同硬件，欢迎[提交一份可复现的性能结果](https://github.com/shyringo/qwen3.8-27b-in-c/issues/new?template=benchmark_result.yml)。
+
 实测环境：Intel Core i5-1340P 笔记本、32 GB 宿主机内存、Windows 11、
 WSL2 Ubuntu 22.04.5（24 GiB 客体内存上限）、GCC 11.4、4,096-token 上下文、
 12 个 OpenMP 线程、精确 SiLU、WSL2 ext4 文件系统上的固定权重、已预热模型
