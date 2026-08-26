@@ -56,6 +56,10 @@ GGUF，然后直接进入多轮对话。当前可用内存不少于 20 GiB 时�
 
 当前版本支持纯文本聊天和文本生成，不接收图像或视频输入。
 
+<p align="center">
+  <img src="docs/assets/terminal-demo.png" alt="原生 C 推理引擎在笔记本 CPU 上生成的真实 Qwen3.8-27B 示例输出">
+</p>
+
 需要时也可以手动指定：
 
 ```bash
