@@ -79,7 +79,8 @@ license notices are recorded in [NOTICE](../NOTICE).
   are preserved without separate single-token model passes between turns.
 - **Native resident chat API.** A bounded C HTTP/JSON path holds the model,
   tokenizer, runtime layouts and OpenMP worker pool across chat-completion
-  requests. Each request receives clean recurrent and sampling state, and the
+  requests. Each request receives clean recurrent and sampling state; SSE
+  output combines split UTF-8 token bytes before emitting JSON deltas. The
   loopback-only server requires neither Python nor an external inference
   runtime.
 - **Transactional MTP for recurrent state.** Target and MTP state checkpoints,

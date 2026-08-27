@@ -108,9 +108,11 @@ client call.
 
 The transport has explicit limits for headers, request bodies, decoded text,
 message count and socket idle time. JSON strings are decoded as Unicode and
-responses declare UTF-8. The first release intentionally processes one request
-at a time because concurrent generation would multiply the model's runtime
-state and laptop memory requirement.
+responses declare UTF-8. Streaming requests receive standard SSE chat chunks;
+a small boundary buffer combines token pieces that split a multibyte character
+before JSON encoding, so CJK text and emoji remain valid UTF-8. The server
+intentionally processes one request at a time because concurrent generation
+would multiply the model's runtime state and laptop memory requirement.
 
 ## Split-checkpoint MTP verification
 

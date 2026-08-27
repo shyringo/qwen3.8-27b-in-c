@@ -103,6 +103,106 @@ int q38_buffer_append_json_string(Q38Buffer *buffer,
     return q38_buffer_append(buffer, "\"", 1u);
 }
 
+static int q38_utf8_sequence(const unsigned char *text, size_t available,
+                             size_t *length)
+{
+    const unsigned char first = text[0];
+    if (first <= 0x7fu) {
+        *length = 1u;
+        return 1;
+    }
+    size_t needed = 0;
+    if (first >= 0xc2u && first <= 0xdfu) needed = 2u;
+    else if (first >= 0xe0u && first <= 0xefu) needed = 3u;
+    else if (first >= 0xf0u && first <= 0xf4u) needed = 4u;
+    else return -1;
+    if (available < 2u) return 0;
+    const unsigned char second = text[1];
+    if ((second & 0xc0u) != 0x80u ||
+        (first == 0xe0u && second < 0xa0u) ||
+        (first == 0xedu && second >= 0xa0u) ||
+        (first == 0xf0u && second < 0x90u) ||
+        (first == 0xf4u && second >= 0x90u))
+        return -1;
+    if (available < needed) return 0;
+    for (size_t i = 2u; i < needed; ++i)
+        if ((text[i] & 0xc0u) != 0x80u) return -1;
+    *length = needed;
+    return 1;
+}
+
+void q38_utf8_stream_init(Q38Utf8Stream *stream,
+                          int (*emit)(void *context,
+                                      const char *data, size_t length),
+                          void *context)
+{
+    if (!stream) return;
+    q38_buffer_init(&stream->pending);
+    stream->emit = emit;
+    stream->context = context;
+}
+
+void q38_utf8_stream_free(Q38Utf8Stream *stream)
+{
+    if (!stream) return;
+    q38_buffer_free(&stream->pending);
+    stream->emit = NULL;
+    stream->context = NULL;
+}
+
+int q38_utf8_stream_write(void *context, const char *data, size_t length)
+{
+    Q38Utf8Stream *stream = (Q38Utf8Stream *)context;
+    if (!stream || !stream->emit || !q38_buffer_append(&stream->pending,
+                                                        data, length))
+        return 0;
+    static const char replacement[] = "\xef\xbf\xbd";
+    size_t cursor = 0;
+    size_t run = 0;
+    while (cursor < stream->pending.length) {
+        size_t sequence = 0;
+        const int status = q38_utf8_sequence(
+            (const unsigned char *)stream->pending.data + cursor,
+            stream->pending.length - cursor, &sequence);
+        if (status == 0) break;
+        if (status > 0) {
+            cursor += sequence;
+            continue;
+        }
+        if (cursor > run && !stream->emit(stream->context,
+                                          stream->pending.data + run,
+                                          cursor - run))
+            return 0;
+        if (!stream->emit(stream->context, replacement,
+                          sizeof(replacement) - 1u))
+            return 0;
+        ++cursor;
+        run = cursor;
+    }
+    if (cursor > run && !stream->emit(stream->context,
+                                      stream->pending.data + run,
+                                      cursor - run))
+        return 0;
+    const size_t remaining = stream->pending.length - cursor;
+    if (remaining)
+        memmove(stream->pending.data, stream->pending.data + cursor, remaining);
+    stream->pending.length = remaining;
+    if (stream->pending.data) stream->pending.data[remaining] = '\0';
+    return 1;
+}
+
+int q38_utf8_stream_flush(Q38Utf8Stream *stream)
+{
+    static const char replacement[] = "\xef\xbf\xbd";
+    if (!stream || !stream->emit) return 0;
+    if (stream->pending.length &&
+        !stream->emit(stream->context, replacement, sizeof(replacement) - 1u))
+        return 0;
+    stream->pending.length = 0;
+    if (stream->pending.data) stream->pending.data[0] = '\0';
+    return 1;
+}
+
 static int q38_token_equal(const char *json, const jsmntok_t *token,
                            const char *text)
 {
@@ -336,9 +436,31 @@ int q38_http_parse_chat_request(const char *json, size_t length,
     }
 
     token = q38_object_get(json, tokens, count, 0, "stream");
-    if (token >= 0 && !q38_primitive_is(json, &tokens[token], "false")) {
-        q38_http_error(error, error_capacity, "streaming is not supported yet");
-        goto fail;
+    if (token >= 0) {
+        if (q38_primitive_is(json, &tokens[token], "true")) request->stream = 1;
+        else if (!q38_primitive_is(json, &tokens[token], "false")) {
+            q38_http_error(error, error_capacity, "stream must be true or false");
+            goto fail;
+        }
+    }
+    token = q38_object_get(json, tokens, count, 0, "stream_options");
+    if (token >= 0) {
+        if (!request->stream || tokens[token].type != JSMN_OBJECT) {
+            q38_http_error(error, error_capacity,
+                           "stream_options requires stream true");
+            goto fail;
+        }
+        const int include = q38_object_get(json, tokens, count, token,
+                                           "include_usage");
+        if (include >= 0) {
+            if (q38_primitive_is(json, &tokens[include], "true"))
+                request->include_usage = 1;
+            else if (!q38_primitive_is(json, &tokens[include], "false")) {
+                q38_http_error(error, error_capacity,
+                               "include_usage must be true or false");
+                goto fail;
+            }
+        }
     }
     token = q38_object_get(json, tokens, count, 0, "n");
     if (token >= 0) {

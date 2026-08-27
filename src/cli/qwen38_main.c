@@ -56,6 +56,7 @@ typedef struct {
 typedef struct {
     int (*write)(void *context, const char *data, size_t length);
     void *context;
+    int append_final_newline;
 } Q38Output;
 
 typedef struct {
@@ -323,7 +324,9 @@ static int q38_finish_output(int closed_thinking, int truncated,
 {
     if (truncated && !closed_thinking)
         return q38_output_string(output, "\n</think>\n\n");
-    return q38_output_string(output, "\n");
+    if (output->append_final_newline)
+        return q38_output_string(output, "\n");
+    return 1;
 }
 
 static void q38_report_timing(int prompt_tokens, uint32_t generated,
@@ -838,6 +841,137 @@ static void q38_sampler_reset(Q38Sampler *sampler, uint8_t *presence,
     sampler->presence_size = vocabulary_size;
 }
 
+typedef struct {
+    int client;
+    char id[96];
+    long long created;
+    int include_usage;
+    Q38Utf8Stream utf8;
+} Q38HttpStream;
+
+static int q38_http_stream_headers(int client)
+{
+    static const char headers[] =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/event-stream; charset=utf-8\r\n"
+        "Cache-Control: no-cache\r\n"
+        "X-Accel-Buffering: no\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Access-Control-Allow-Headers: Authorization, Content-Type\r\n"
+        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+        "Connection: close\r\n\r\n";
+    return q38_socket_send_all(client, headers, sizeof(headers) - 1u);
+}
+
+static int q38_http_stream_send(Q38HttpStream *stream, Q38Buffer *event)
+{
+    const int ok = q38_buffer_append_string(event, "\n\n") &&
+                   q38_socket_send_all(stream->client,
+                                       event->data, event->length);
+    q38_buffer_free(event);
+    return ok;
+}
+
+static int q38_http_stream_role(Q38HttpStream *stream)
+{
+    Q38Buffer event;
+    q38_buffer_init(&event);
+    const int ok = q38_buffer_printf(
+        &event,
+        "data: {\"id\":\"%s\",\"object\":\"chat.completion.chunk\","
+        "\"created\":%lld,\"model\":\"qwen3.8-27b-in-c\","
+        "\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\","
+        "\"content\":\"\"},\"finish_reason\":null}]%s}",
+        stream->id, stream->created,
+        stream->include_usage ? ",\"usage\":null" : "");
+    if (!ok) {
+        q38_buffer_free(&event);
+        return 0;
+    }
+    return q38_http_stream_send(stream, &event);
+}
+
+static int q38_http_stream_content(void *context,
+                                   const char *data, size_t length)
+{
+    Q38HttpStream *stream = (Q38HttpStream *)context;
+    Q38Buffer event;
+    q38_buffer_init(&event);
+    int ok = q38_buffer_printf(
+        &event,
+        "data: {\"id\":\"%s\",\"object\":\"chat.completion.chunk\","
+        "\"created\":%lld,\"model\":\"qwen3.8-27b-in-c\","
+        "\"choices\":[{\"index\":0,\"delta\":{\"content\":",
+        stream->id, stream->created);
+    if (ok) ok = q38_buffer_append_json_string(&event, data, length);
+    if (ok) ok = q38_buffer_printf(
+        &event, "},\"finish_reason\":null}]%s}",
+        stream->include_usage ? ",\"usage\":null" : "");
+    if (!ok) {
+        q38_buffer_free(&event);
+        return 0;
+    }
+    return q38_http_stream_send(stream, &event);
+}
+
+static int q38_http_stream_finish(Q38HttpStream *stream,
+                                  const Q38GenerationStats *stats)
+{
+    if (!q38_utf8_stream_flush(&stream->utf8)) return 0;
+    Q38Buffer event;
+    q38_buffer_init(&event);
+    int ok = q38_buffer_printf(
+        &event,
+        "data: {\"id\":\"%s\",\"object\":\"chat.completion.chunk\","
+        "\"created\":%lld,\"model\":\"qwen3.8-27b-in-c\","
+        "\"choices\":[{\"index\":0,\"delta\":{},"
+        "\"finish_reason\":\"%s\"}]%s}",
+        stream->id, stream->created, stats->truncated ? "length" : "stop",
+        stream->include_usage ? ",\"usage\":null" : "");
+    if (!ok) {
+        q38_buffer_free(&event);
+        return 0;
+    }
+    if (!q38_http_stream_send(stream, &event)) return 0;
+    if (stream->include_usage) {
+        q38_buffer_init(&event);
+        ok = q38_buffer_printf(
+            &event,
+            "data: {\"id\":\"%s\",\"object\":\"chat.completion.chunk\","
+            "\"created\":%lld,\"model\":\"qwen3.8-27b-in-c\","
+            "\"choices\":[],\"usage\":{\"prompt_tokens\":%d,"
+            "\"completion_tokens\":%u,\"total_tokens\":%u}}",
+            stream->id, stream->created, stats->prompt_tokens,
+            stats->completion_tokens,
+            (unsigned)(stats->prompt_tokens + (int)stats->completion_tokens));
+        if (!ok) {
+            q38_buffer_free(&event);
+            return 0;
+        }
+        if (!q38_http_stream_send(stream, &event)) return 0;
+    }
+    static const char done[] = "data: [DONE]\n\n";
+    return q38_socket_send_all(stream->client, done, sizeof(done) - 1u);
+}
+
+static int q38_http_stream_error(Q38HttpStream *stream, const char *message)
+{
+    Q38Buffer event;
+    q38_buffer_init(&event);
+    int ok = q38_buffer_append_string(&event,
+                                      "data: {\"error\":{\"message\":") &&
+             q38_buffer_append_json_string(&event, message, strlen(message)) &&
+             q38_buffer_append_string(
+                 &event, ",\"type\":\"server_error\"}}");
+    if (!ok) {
+        q38_buffer_free(&event);
+        return 0;
+    }
+    if (!q38_http_stream_send(stream, &event)) return 0;
+    static const char done[] = "data: [DONE]\n\n";
+    return q38_socket_send_all(stream->client, done, sizeof(done) - 1u);
+}
+
 static int q38_http_chat(int client, Q38Model *model,
                           Q38Tokenizer *tokenizer, Q38Sampler *sampler,
                           uint8_t *presence, uint32_t vocabulary_size,
@@ -879,32 +1013,73 @@ static int q38_http_chat(int client, Q38Model *model,
     q38_sampler_reset(sampler, presence, vocabulary_size, &options);
     Q38Buffer answer;
     q38_buffer_init(&answer);
-    Q38Output output = {q38_http_buffer_write, &answer};
+    const time_t created = time(NULL);
+    const unsigned long long serial = ++completion_serial;
+    char completion_id[96];
+    const int id_length = snprintf(completion_id, sizeof(completion_id),
+                                   "chatcmpl-local-%lld-%llu",
+                                   (long long)created, serial);
+    if (id_length <= 0 || (size_t)id_length >= sizeof(completion_id)) {
+        free(prompt);
+        q38_http_chat_request_free(&request);
+        return q38_http_error_response(client, 500, "Internal Server Error",
+                                        "unable to create completion id");
+    }
+    Q38HttpStream stream;
+    memset(&stream, 0, sizeof(stream));
+    Q38Output output = {q38_http_buffer_write, &answer, 1};
+    if (request.stream) {
+        stream.client = client;
+        stream.created = (long long)created;
+        stream.include_usage = request.include_usage;
+        snprintf(stream.id, sizeof(stream.id), "%s", completion_id);
+        q38_utf8_stream_init(&stream.utf8, q38_http_stream_content, &stream);
+        if (!q38_http_stream_headers(client) || !q38_http_stream_role(&stream)) {
+            q38_utf8_stream_free(&stream.utf8);
+            free(prompt);
+            q38_http_chat_request_free(&request);
+            return 0;
+        }
+        output.write = q38_utf8_stream_write;
+        output.context = &stream.utf8;
+        output.append_final_newline = 0;
+    }
     Q38GenerationStats stats = {0};
     const int generated = q38_generate_rendered(
         model, tokenizer, sampler, &options, prompt, close_token,
         NULL, &output, &stats);
     free(prompt);
+    const int streaming = request.stream;
     q38_http_chat_request_free(&request);
     if (!generated) {
         q38_buffer_free(&answer);
+        if (streaming) {
+            const int sent = q38_http_stream_error(
+                &stream, "model generation failed");
+            q38_utf8_stream_free(&stream.utf8);
+            return sent;
+        }
         return q38_http_error_response(client, 500, "Internal Server Error",
                                         "model generation failed");
+    }
+    if (streaming) {
+        const int sent = q38_http_stream_finish(&stream, &stats);
+        q38_utf8_stream_free(&stream.utf8);
+        q38_buffer_free(&answer);
+        return sent;
     }
     while (answer.length && answer.data[answer.length - 1u] == '\n')
         answer.data[--answer.length] = '\0';
     Q38Buffer response;
     q38_buffer_init(&response);
-    const time_t created = time(NULL);
-    const unsigned long long serial = ++completion_serial;
     int ok = q38_buffer_printf(
         &response,
-        "{\"id\":\"chatcmpl-local-%lld-%llu\","
+        "{\"id\":\"%s\","
         "\"object\":\"chat.completion\","
         "\"created\":%lld,\"model\":\"qwen3.8-27b-in-c\","
         "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
         "\"content\":",
-        (long long)created, serial, (long long)created);
+        completion_id, (long long)created);
     if (ok) ok = q38_buffer_append_json_string(&response,
                                                 answer.data ? answer.data : "",
                                                 answer.length);
@@ -1104,7 +1279,7 @@ int main(int argc, char **argv)
     sampler.presence_penalty = options.presence_penalty;
     sampler.presence = presence;
     sampler.presence_size = vocabulary_size;
-    Q38Output output = {q38_file_write, stdout};
+    Q38Output output = {q38_file_write, stdout, 1};
     int ok = 1;
     if (options.server_port) {
         ok = q38_server(model, tokenizer, &sampler, presence,

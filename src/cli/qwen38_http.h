@@ -22,6 +22,8 @@ typedef struct {
     float temperature;
     float top_p;
     float presence_penalty;
+    int stream;
+    int include_usage;
     int has_max_tokens;
     int has_seed;
     int has_temperature;
@@ -34,6 +36,12 @@ typedef struct {
     size_t length;
     size_t capacity;
 } Q38Buffer;
+
+typedef struct {
+    Q38Buffer pending;
+    int (*emit)(void *context, const char *data, size_t length);
+    void *context;
+} Q38Utf8Stream;
 
 void q38_http_chat_request_init(Q38HttpChatRequest *request);
 void q38_http_chat_request_free(Q38HttpChatRequest *request);
@@ -48,5 +56,13 @@ int q38_buffer_append(Q38Buffer *buffer, const char *data, size_t length);
 int q38_buffer_append_string(Q38Buffer *buffer, const char *text);
 int q38_buffer_append_json_string(Q38Buffer *buffer,
                                   const char *text, size_t length);
+
+void q38_utf8_stream_init(Q38Utf8Stream *stream,
+                          int (*emit)(void *context,
+                                      const char *data, size_t length),
+                          void *context);
+void q38_utf8_stream_free(Q38Utf8Stream *stream);
+int q38_utf8_stream_write(void *context, const char *data, size_t length);
+int q38_utf8_stream_flush(Q38Utf8Stream *stream);
 
 #endif

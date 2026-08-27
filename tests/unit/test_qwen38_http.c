@@ -21,6 +21,11 @@ static int expect_error(const char *json, const char *needle)
     return !ok && strstr(error, needle) != NULL;
 }
 
+static int collect(void *context, const char *data, size_t length)
+{
+    return q38_buffer_append((Q38Buffer *)context, data, length);
+}
+
 int main(void)
 {
     static const char valid[] =
@@ -43,11 +48,25 @@ int main(void)
     CHECK(request.has_temperature && request.temperature == 0.5f);
     CHECK(request.has_top_p && request.top_p == 0.8f);
     CHECK(request.has_presence_penalty && request.presence_penalty == 1.25f);
+    CHECK(!request.stream && !request.include_usage);
+    q38_http_chat_request_free(&request);
+
+    static const char streaming[] =
+        "{\"model\":\"qwen3.8-27b-in-c\",\"messages\":["
+        "{\"role\":\"developer\",\"content\":\"brief\"},"
+        "{\"role\":\"user\",\"content\":\"hello\"}],"
+        "\"stream\":true,\"stream_options\":{\"include_usage\":true}}";
+    CHECK(q38_http_parse_chat_request(streaming, strlen(streaming), &request,
+                                       error, sizeof(error)));
+    CHECK(request.stream && request.include_usage);
     q38_http_chat_request_free(&request);
 
     CHECK(expect_error(
-        "{\"model\":\"x\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"stream\":true}",
-        "streaming"));
+        "{\"model\":\"x\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"stream\":1}",
+        "stream must"));
+    CHECK(expect_error(
+        "{\"model\":\"x\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"stream_options\":{}}",
+        "requires stream"));
     CHECK(expect_error(
         "{\"model\":\"x\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}]}",
         "string role and content"));
@@ -76,6 +95,34 @@ int main(void)
     CHECK(q38_buffer_append_json_string(&buffer, raw, sizeof(raw) - 1u));
     CHECK(strcmp(buffer.data, "\"quote=\\\" slash=\\\\ line=\\n tab=\\t\"") == 0);
     q38_buffer_free(&buffer);
+
+    Q38Buffer streamed;
+    q38_buffer_init(&streamed);
+    Q38Utf8Stream utf8;
+    q38_utf8_stream_init(&utf8, collect, &streamed);
+    static const char split_one[] = "A\xf0\x9f";
+    static const char split_two[] = "\x9a\x80\xe7";
+    static const char split_three[] = "\xa7\x91";
+    CHECK(q38_utf8_stream_write(&utf8, split_one, sizeof(split_one) - 1u));
+    CHECK(streamed.length == 1u && strcmp(streamed.data, "A") == 0);
+    CHECK(q38_utf8_stream_write(&utf8, split_two, sizeof(split_two) - 1u));
+    CHECK(strcmp(streamed.data, "A\xf0\x9f\x9a\x80") == 0);
+    CHECK(q38_utf8_stream_write(&utf8, split_three,
+                                 sizeof(split_three) - 1u));
+    CHECK(strcmp(streamed.data, "A\xf0\x9f\x9a\x80\xe7\xa7\x91") == 0);
+    static const char invalid[] = "\xff" "B";
+    CHECK(q38_utf8_stream_write(&utf8, invalid, sizeof(invalid) - 1u));
+    CHECK(strcmp(streamed.data,
+                 "A\xf0\x9f\x9a\x80\xe7\xa7\x91\xef\xbf\xbd" "B") == 0);
+    static const char incomplete[] = "\xe4\xb8";
+    CHECK(q38_utf8_stream_write(&utf8, incomplete,
+                                 sizeof(incomplete) - 1u));
+    CHECK(q38_utf8_stream_flush(&utf8));
+    CHECK(strcmp(streamed.data,
+                 "A\xf0\x9f\x9a\x80\xe7\xa7\x91\xef\xbf\xbd" "B"
+                 "\xef\xbf\xbd") == 0);
+    q38_utf8_stream_free(&utf8);
+    q38_buffer_free(&streamed);
 
     char *large = (char *)calloc(Q38_HTTP_MAX_BODY + 2u, 1u);
     CHECK(large != NULL);

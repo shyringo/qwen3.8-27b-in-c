@@ -106,8 +106,9 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 ```
 
 Use `http://127.0.0.1:8080/v1` as the base URL; no API key is required. The
-model remains resident between requests. See the exact supported fields and
-current limits in [Local API](docs/API.md).
+model remains resident between requests. Set `"stream": true` for live SSE
+token delivery. See the exact supported fields and current limits in
+[Local API](docs/API.md).
 
 Context length and CPU threads can be changed without rebuilding:
 
@@ -213,8 +214,8 @@ The project-specific designs include:
   and EOS into the next prefill without changing official chat boundaries.
 - **Native resident chat API.** A bounded C HTTP/JSON path keeps the model,
   tokenizer, runtime layouts, and worker pool loaded across standard chat
-  completion requests; it needs no Python service or external inference
-  runtime and listens only on loopback.
+  completion requests and streams UTF-8-safe token deltas; it needs no Python
+  service or external inference runtime and listens only on loopback.
 - **Transactional recurrent MTP.** Checkpoint, roll back, replay and realign
   recurrent target/draft state so rejected tokens are never shown or retained.
 - **Laptop-aware automatic scheduling.** Cap automatic CPU use at 12 workers
