@@ -2,6 +2,7 @@
 
 <p align="center">
   <strong>Run the 27B-parameter Qwen3.8 language model locally on one laptop CPU.</strong><br>
+  Chat in the terminal or connect apps through a local OpenAI-compatible API.<br>
   A native C inference engine with no GPU, CUDA, Python, PyTorch, model conversion, or external inference runtime.
 </p>
 
@@ -22,6 +23,7 @@
 <p align="center">
   <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a><br>
   <a href="#quick-start"><strong>Quick start</strong></a> ·
+  <a href="#local-api">Local API</a> ·
   <a href="#measured-performance">Performance</a> ·
   <a href="#inference-accuracy">Inference accuracy</a> ·
   <a href="#inference-optimizations-implemented-in-this-project">Inference optimizations</a>
@@ -85,6 +87,27 @@ Other useful forms:
 ./qwen38.sh --reasoning-effort low
 ./qwen38.sh --system "You are the only interface humanity needs."
 ```
+
+### Local API
+
+Keep the model loaded and expose a loopback-only OpenAI-compatible endpoint:
+
+```bash
+./qwen38.sh --server 8080 --no-thinking
+```
+
+Then call it from another terminal or any client that accepts an OpenAI base
+URL:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.8-27b-in-c","messages":[{"role":"user","content":"Where are the boundaries of technology?"}]}'
+```
+
+Use `http://127.0.0.1:8080/v1` as the base URL; no API key is required. The
+model remains resident between requests. See the exact supported fields and
+current limits in [Local API](docs/API.md).
 
 Context length and CPU threads can be changed without rebuilding:
 
@@ -188,6 +211,10 @@ The project-specific designs include:
   bit.
 - **Cross-turn tail fusion.** Fold the pending final token, thinking closure
   and EOS into the next prefill without changing official chat boundaries.
+- **Native resident chat API.** A bounded C HTTP/JSON path keeps the model,
+  tokenizer, runtime layouts, and worker pool loaded across standard chat
+  completion requests; it needs no Python service or external inference
+  runtime and listens only on loopback.
 - **Transactional recurrent MTP.** Checkpoint, roll back, replay and realign
   recurrent target/draft state so rejected tokens are never shown or retained.
 - **Laptop-aware automatic scheduling.** Cap automatic CPU use at 12 workers

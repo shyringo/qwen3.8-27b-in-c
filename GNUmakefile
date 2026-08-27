@@ -23,15 +23,17 @@ endif
 WARN := -Wall -Wextra -Wpointer-arith -Wshadow -Wvla
 CFLAGS ?= -O3 -std=c99 $(WARN) $(ARCH) $(OMP_CFLAGS) -ffp-contract=off
 LDFLAGS ?= -lm $(OMP_LDFLAGS)
-INCLUDES := -Iinclude -Iinclude/qwen38 -Ithird_party -Isrc/io
+INCLUDES := -Iinclude -Iinclude/qwen38 -Ithird_party -Isrc/io -Isrc/cli
 
 GGUF_OBJ := $(BUILD)/src/io/qwen38_gguf.o
 QUANT_OBJ := $(BUILD)/src/qwen38/qwen38_quant.o
 MODEL_OBJ := $(BUILD)/src/qwen38/qwen38_model.o
 TOKENIZER_OBJ := $(BUILD)/src/qwen38/qwen38_tokenizer.o
 SAMPLER_OBJ := $(BUILD)/src/qwen38/qwen38_sampler.o
+HTTP_OBJ := $(BUILD)/src/cli/qwen38_http.o
 TEST_BINS := $(BIN)/test_qwen38_gguf $(BIN)/test_qwen38_quant \
-	$(BIN)/test_qwen38_sampler $(BIN)/test_qwen38_nfc
+	$(BIN)/test_qwen38_sampler $(BIN)/test_qwen38_nfc \
+	$(BIN)/test_qwen38_http
 TOOL_BINS := $(BIN)/qwen38-gguf-inspect \
 	$(BIN)/qwen38-kernel-probe $(BIN)/qwen38-forward-probe \
 	$(BIN)/qwen38-logits-probe $(BIN)/qwen38-batch-probe \
@@ -74,6 +76,9 @@ $(BIN)/test_qwen38_nfc: tests/unit/test_qwen38_nfc.c \
 	third_party/tok_nfc.h third_party/tok_nfc_data.h | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
+$(BIN)/test_qwen38_http: tests/unit/test_qwen38_http.c $(HTTP_OBJ) | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
 $(BIN)/qwen38-gguf-inspect: src/cli/qwen38_gguf_inspect.c $(GGUF_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
@@ -101,7 +106,7 @@ $(BIN)/qwen38-spec-bench: src/cli/qwen38_spec_bench.c $(MODEL_OBJ) $(QUANT_OBJ) 
 $(BIN)/qwen38-tokenize: src/cli/qwen38_tokenize.c $(TOKENIZER_OBJ) $(GGUF_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
-$(BIN)/qwen38: src/cli/qwen38_main.c $(MODEL_OBJ) $(QUANT_OBJ) $(TOKENIZER_OBJ) $(SAMPLER_OBJ) $(GGUF_OBJ) | $(BIN)
+$(BIN)/qwen38: src/cli/qwen38_main.c $(MODEL_OBJ) $(QUANT_OBJ) $(TOKENIZER_OBJ) $(SAMPLER_OBJ) $(GGUF_OBJ) $(HTTP_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
 test: $(TEST_BINS) $(BIN)/qwen38
@@ -109,6 +114,7 @@ test: $(TEST_BINS) $(BIN)/qwen38
 	./$(BIN)/test_qwen38_quant
 	./$(BIN)/test_qwen38_sampler
 	./$(BIN)/test_qwen38_nfc
+	./$(BIN)/test_qwen38_http
 	./$(BIN)/qwen38 --help >/dev/null 2>&1
 
 strict:

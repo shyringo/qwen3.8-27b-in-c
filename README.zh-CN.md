@@ -2,6 +2,7 @@
 
 <p align="center">
   <strong>只用一颗笔记本 CPU，在本地运行 270 亿参数的 Qwen3.8 大语言模型。</strong><br>
+  既可以在终端聊天，也可以通过本地 OpenAI 兼容接口接入应用。<br>
   原生 C 语言推理引擎，不需要 GPU、CUDA、Python、PyTorch、权重转换或其他推理框架。
 </p>
 
@@ -22,6 +23,7 @@
 <p align="center">
   <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a><br>
   <a href="#快速开始"><strong>快速开始</strong></a> ·
+  <a href="#本地-api">本地 API</a> ·
   <a href="#实测性能">实测性能</a> ·
   <a href="#推理准确性">推理准确性</a> ·
   <a href="#本项目实现的推理优化">推理优化</a>
@@ -82,6 +84,25 @@ QWEN38_QUANT=iq2_m ./qwen38.sh    # 可选的中等体积方案
 ./qwen38.sh --reasoning-effort low
 ./qwen38.sh --system "你是人类所需要的唯一入口"
 ```
+
+### 本地 API
+
+让模型常驻内存，并启动一个仅限本机访问的 OpenAI 兼容接口：
+
+```bash
+./qwen38.sh --server 8080 --no-thinking
+```
+
+在另一个终端中调用，或者让支持自定义 OpenAI 地址的应用连接它：
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.8-27b-in-c","messages":[{"role":"user","content":"科技的边界在哪里？"}]}'
+```
+
+接口地址填写 `http://127.0.0.1:8080/v1`，无需 API Key。模型会在多次请求
+之间保持加载，具体支持的参数和当前限制见[本地 API](docs/API.md)。
 
 上下文长度和 CPU 线程数无需重新编译即可修改：
 
@@ -167,6 +188,9 @@ IQ1_M 和 Q4_K_M 都是原始权重的有损量化，质量和内存取舍不同
   矩阵读取，同时保持原生完整 logits 逐 bit 一致。
 - **跨轮次尾部融合。** 把上轮待处理 token、思考结束标记和 EOS 合入下一轮
   prefill，保持官方聊天格式，同时省去轮次之间的单 token 推理。
+- **原生常驻聊天接口。** 用有明确容量限制的 C 语言 HTTP/JSON 实现处理标准
+  chat completion 请求，让模型、分词器、运行时布局和线程池跨请求保持加载；
+  不需要 Python 服务或外部推理框架，并且只监听本机地址。
 - **循环状态事务式 MTP。** 对主模型和 draft 状态做检查点、回滚、重放和
   对齐，拒绝的 token 不会显示，也不会留在模型状态里。
 - **笔记本自适应线程调度。** 自动使用的 CPU 线程不超过 12 个；除非用户已经

@@ -97,6 +97,21 @@ prepends them to the next user message's layer-major prefill. This preserves the
 chat template and avoids separate boundary-token forward passes. `/reset`
 clears both model state and the pending turn tail.
 
+## Resident local API
+
+`--server PORT` starts a serial HTTP service bound to `127.0.0.1`. The GGUF
+mapping, tokenizer, runtime layouts, recurrent buffers, KV cache, sampler
+allocation and OpenMP worker pool stay resident. Each chat-completion request
+resets model and sampling state, then reconstructs the conversation from its
+`messages` array, so requests cannot inherit hidden state from an earlier
+client call.
+
+The transport has explicit limits for headers, request bodies, decoded text,
+message count and socket idle time. JSON strings are decoded as Unicode and
+responses declare UTF-8. The first release intentionally processes one request
+at a time because concurrent generation would multiply the model's runtime
+state and laptop memory requirement.
+
 ## Split-checkpoint MTP verification
 
 The optional `--mtp-model` file contains the trained layer 64, shared

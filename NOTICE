@@ -13,6 +13,10 @@ The NFC normalization tables in `third_party/tok_nfc_data.h` are generated
 from the Unicode 9.0.0 Character Database. The Unicode data license is
 included in `third_party/UNICODE-LICENSE.txt`.
 
+The native HTTP API uses `jsmn.h` from zserge/jsmn revision
+`25647e692c7906b96ffd2b05ca54c097948e879c` under the MIT License, included in
+`third_party/JSMN-LICENSE.txt`.
+
 GGUF, the Q2_K through Q6_K and Q8_0/Q8_K encodings, and IQ tensor formats are
 compatibility formats published by the ggml and llama.cpp projects. The fixed
 IQ codebook tables in `third_party/ggml-common.h`, along with packed low-bit decoding and
