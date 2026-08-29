@@ -69,16 +69,16 @@ int main(void)
         "requires stream"));
     CHECK(expect_error(
         "{\"model\":\"x\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}]}",
-        "string role and content"));
+        "string or null"));
     CHECK(expect_error(
         "{\"model\":\"x\",\"messages\":[{\"role\":\"tool\",\"content\":\"x\"}]}",
-        "unsupported message role"));
+        "tool_call_id"));
     CHECK(expect_error(
         "{\"model\":\"x\",\"messages\":[{\"role\":\"user\",\"content\":\"\\ud83dX\"}]}",
-        "string role and content"));
+        "string or null"));
     CHECK(expect_error(
         "{\"model\":\"x\",\"messages\":[],\"tools\":[]}",
-        "tools"));
+        "must not be empty"));
     CHECK(expect_error("{\"model\":\"x\",\"messages\":[]}",
                        "must not be empty"));
     CHECK(expect_error("[]", "one valid JSON object"));
@@ -88,6 +88,62 @@ int main(void)
     CHECK(expect_error(
         "{\"model\":\"x\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]} true",
         "trailing JSON"));
+
+    static const char with_tools[] =
+        "{\"model\":\"qwen3.8-27b-in-c\",\"tools\":[{"
+        "\"type\":\"function\",\"function\":{\"name\":\"weather\","
+        "\"description\":\"Get weather\",\"parameters\":{\"type\":\"object\","
+        "\"properties\":{\"city\":{\"type\":\"string\"}},"
+        "\"required\":[\"city\"]}}}],\"tool_choice\":\"auto\","
+        "\"messages\":[{\"role\":\"developer\",\"content\":\"Be brief\"},"
+        "{\"role\":\"user\",\"content\":\"Weather?\"}]}";
+    CHECK(q38_http_parse_chat_request(with_tools, strlen(with_tools),
+                                       &request, error, sizeof(error)));
+    CHECK(request.tool_count == 1 && !request.tool_choice_none);
+    CHECK(strcmp(request.tools[0].name, "weather") == 0);
+    char *rendered = q38_http_render_messages(&request, "base", 0,
+                                               error, sizeof(error));
+    CHECK(rendered != NULL);
+    CHECK(strstr(rendered, "<tools>\n{\"name\":\"weather\"") != NULL);
+    CHECK(strstr(rendered, "<function=FUNCTION_NAME>") != NULL);
+    CHECK(strstr(rendered, "<|im_start|>assistant\n<think>\n\n</think>") != NULL);
+    free(rendered);
+    q38_http_chat_request_free(&request);
+
+    static const char tool_history[] =
+        "{\"model\":\"qwen3.8-27b-in-c\",\"tools\":[{"
+        "\"type\":\"function\",\"function\":{\"name\":\"weather\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{}}}}],"
+        "\"messages\":[{\"role\":\"user\",\"content\":\"Weather?\"},"
+        "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{"
+        "\"id\":\"call-1\",\"type\":\"function\",\"function\":{"
+        "\"name\":\"weather\",\"arguments\":\"{\\\"city\\\":\\\"Beijing\\\"}\"}}]},"
+        "{\"role\":\"tool\",\"tool_call_id\":\"call-1\","
+        "\"content\":\"{\\\"temp\\\":25}\"}]}";
+    CHECK(q38_http_parse_chat_request(tool_history, strlen(tool_history),
+                                       &request, error, sizeof(error)));
+    rendered = q38_http_render_messages(&request, NULL, 1,
+                                         error, sizeof(error));
+    CHECK(rendered != NULL);
+    CHECK(strstr(rendered,
+          "<tool_call>\n<function=weather>\n<parameter=city>Beijing</parameter>") != NULL);
+    CHECK(strstr(rendered,
+          "<tool_response>\n{\"temp\":25}\n</tool_response>") != NULL);
+    free(rendered);
+    q38_http_chat_request_free(&request);
+
+    CHECK(expect_error(
+        "{\"model\":\"x\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],\"tool_choice\":\"required\"}",
+        "auto or none"));
+    CHECK(expect_error(
+        "{\"model\":\"x\",\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"bad name\",\"parameters\":{}}}],\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]}",
+        "valid name"));
+    CHECK(expect_error(
+        "{\"model\":\"x\",\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"same\",\"parameters\":{}}},{\"type\":\"function\",\"function\":{\"name\":\"same\",\"parameters\":{}}}],\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]}",
+        "unique"));
+    CHECK(expect_error(
+        "{\"model\":\"x\",\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"x\",\"parameters\":{}}}],\"messages\":[{\"role\":\"user\",\"content\":\"x\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"c\",\"type\":\"function\",\"function\":{\"name\":\"bad name\",\"arguments\":\"{}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c\",\"content\":\"x\"}]}",
+        "invalid function"));
 
     Q38Buffer buffer;
     q38_buffer_init(&buffer);

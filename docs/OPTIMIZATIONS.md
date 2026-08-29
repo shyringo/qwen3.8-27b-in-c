@@ -77,12 +77,13 @@ license notices are recorded in [NOTICE](../NOTICE).
 - **Cross-turn tail fusion.** A pending final token, thinking closure and EOS
   are folded into the next prompt prefill. Official chat-template boundaries
   are preserved without separate single-token model passes between turns.
-- **Native resident chat API.** A bounded C HTTP/JSON path holds the model,
-  tokenizer, runtime layouts and OpenMP worker pool across chat-completion
-  requests. Each request receives clean recurrent and sampling state; SSE
-  output combines split UTF-8 token bytes before emitting JSON deltas. The
-  loopback-only server requires neither Python nor an external inference
-  runtime.
+- **Native resident chat and tool API.** A bounded C HTTP/JSON path holds the
+  model, tokenizer, runtime layouts and OpenMP worker pool across requests.
+  The native tool path renders Qwen3.8 XML, validates declared functions,
+  restores JSON-schema argument types, supports parallel calls and result
+  replay, and emits OpenAI-compatible non-streaming or SSE responses. UTF-8
+  token boundaries and long-request keep-alives are handled without Python or
+  an external inference runtime.
 - **Transactional MTP for recurrent state.** Target and MTP state checkpoints,
   rejected-suffix rollback, confirmed-prefix replay and hidden-state
   realignment make speculative greedy verification output-equivalent to

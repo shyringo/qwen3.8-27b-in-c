@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>只用一颗笔记本 CPU，在本地运行 270 亿参数的 Qwen3.8 大语言模型。</strong><br>
-  既可以在终端聊天，也可以通过本地 OpenAI 兼容接口接入应用。<br>
+  既可以在终端聊天，也可以通过本地 OpenAI 兼容接口接入应用和函数工具。<br>
   原生 C 语言推理引擎，不需要 GPU、CUDA、Python、PyTorch、权重转换或其他推理框架。
 </p>
 
@@ -12,6 +12,7 @@
     <td align="center"><strong>2.52 token/s</strong><br>32 GB x86 笔记本最优速度<br><strong>0.397 s/token</strong></td>
     <td align="center"><strong>最低 8 GB 内存</strong><br>已通过受限运行验证</td>
     <td align="center"><strong>准确性无损</strong><br>推理加速不改变结果<br>加速前后完全一致</td>
+    <td align="center"><strong>函数工具</strong><br>兼容 OpenAI 调用格式<br>不需要 Python 服务</td>
   </tr>
 </table>
 
@@ -103,8 +104,10 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 ```
 
 接口地址填写 `http://127.0.0.1:8080/v1`，无需 API Key。模型会在多次请求
-之间保持加载；设置 `"stream": true` 即可实时接收 SSE token。具体支持的参数
-和当前限制见[本地 API](docs/API.md)。
+之间保持加载；设置 `"stream": true` 即可实时接收 SSE token。函数工具、并行
+调用和工具结果回传都使用 OpenAI Chat Completions 的请求与响应格式。推理引擎
+只提出调用，工具仍由接入它的应用执行。完整示例、支持的参数和当前限制见
+[本地 API](docs/API.md)。
 
 上下文长度和 CPU 线程数无需重新编译即可修改：
 
@@ -190,10 +193,10 @@ IQ1_M 和 Q4_K_M 都是原始权重的有损量化，质量和内存取舍不同
   矩阵读取，同时保持原生完整 logits 逐 bit 一致。
 - **跨轮次尾部融合。** 把上轮待处理 token、思考结束标记和 EOS 合入下一轮
   prefill，保持官方聊天格式，同时省去轮次之间的单 token 推理。
-- **原生常驻聊天接口。** 用有明确容量限制的 C 语言 HTTP/JSON 实现处理标准
-  chat completion 请求，让模型、分词器、运行时布局和线程池跨请求保持加载，
-  并安全地流式发送 UTF-8 token；不需要 Python 服务或外部推理框架，并且只
-  监听本机地址。
+- **原生常驻聊天与工具接口。** 用有明确容量限制的 C 语言 HTTP/JSON 实现让模型、
+  分词器、运行时布局和线程池跨请求保持加载；它可以渲染 Qwen3.8 的工具协议，
+  按 schema 还原参数类型，支持并行调用和工具结果回传，并在耗时较长的 SSE 请求
+  中保持连接，不需要 Python 服务或外部推理框架。
 - **循环状态事务式 MTP。** 对主模型和 draft 状态做检查点、回滚、重放和
   对齐，拒绝的 token 不会显示，也不会留在模型状态里。
 - **笔记本自适应线程调度。** 自动使用的 CPU 线程不超过 12 个；除非用户已经

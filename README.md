@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>Run the 27B-parameter Qwen3.8 language model locally on one laptop CPU.</strong><br>
-  Chat in the terminal or connect apps through a local OpenAI-compatible API.<br>
+  Chat in the terminal or connect apps and function tools through a local OpenAI-compatible API.<br>
   A native C inference engine with no GPU, CUDA, Python, PyTorch, model conversion, or external inference runtime.
 </p>
 
@@ -12,6 +12,7 @@
     <td align="center"><strong>2.52 token/s</strong><br>best on a 32 GB x86 laptop<br><strong>0.397 s/token</strong></td>
     <td align="center"><strong>8 GB RAM</strong><br>minimum tested limit</td>
     <td align="center"><strong>No accuracy loss</strong><br>runtime speedups preserve results<br>verified against the baseline</td>
+    <td align="center"><strong>Function tools</strong><br>OpenAI-compatible calls<br>no Python service</td>
   </tr>
 </table>
 
@@ -108,7 +109,10 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 Use `http://127.0.0.1:8080/v1` as the base URL; no API key is required. The
 model remains resident between requests. Set `"stream": true` for live SSE
-token delivery. See the exact supported fields and current limits in
+token delivery. Function tools, parallel calls, and tool-result messages use
+the same request and response shape as OpenAI Chat Completions; the engine
+proposes calls while your application remains responsible for executing them.
+See the exact supported fields, example, and current limits in
 [Local API](docs/API.md).
 
 Context length and CPU threads can be changed without rebuilding:
@@ -213,10 +217,12 @@ The project-specific designs include:
   bit.
 - **Cross-turn tail fusion.** Fold the pending final token, thinking closure
   and EOS into the next prefill without changing official chat boundaries.
-- **Native resident chat API.** A bounded C HTTP/JSON path keeps the model,
-  tokenizer, runtime layouts, and worker pool loaded across standard chat
-  completion requests and streams UTF-8-safe token deltas; it needs no Python
-  service or external inference runtime and listens only on loopback.
+- **Native resident chat and tool API.** A bounded C HTTP/JSON path keeps the
+  model, tokenizer, runtime layouts, and worker pool loaded across requests.
+  It renders Qwen3.8's tool protocol, converts schema-typed parameters into
+  OpenAI-compatible function calls, supports parallel calls and tool-result
+  replay, and keeps long SSE requests alive without a Python service or
+  external inference runtime.
 - **Transactional recurrent MTP.** Checkpoint, roll back, replay and realign
   recurrent target/draft state so rejected tokens are never shown or retained.
 - **Laptop-aware automatic scheduling.** Cap automatic CPU use at 12 workers

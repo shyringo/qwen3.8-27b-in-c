@@ -2,13 +2,16 @@
 
 #include "qwen38_model.h"
 #include "qwen38_http.h"
+#include "qwen38_tool.h"
 #include "qwen38_sampler.h"
 #include "qwen38_tokenizer.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <arpa/inet.h>
 #include <math.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -787,44 +790,13 @@ static int q38_http_buffer_write(void *context, const char *data, size_t length)
     return q38_buffer_append((Q38Buffer *)context, data, length);
 }
 
-static int q38_chat_append_message(Q38Buffer *prompt,
-                                   const char *role, const char *content)
-{
-    const char *template_role = strcmp(role, "developer") == 0
-                              ? "system" : role;
-    return q38_buffer_append_string(prompt, "<|im_start|>") &&
-           q38_buffer_append_string(prompt, template_role) &&
-           q38_buffer_append_string(prompt, "\n") &&
-           q38_buffer_append_string(prompt, content) &&
-           q38_buffer_append_string(prompt, "<|im_end|>\n");
-}
-
 static char *q38_http_render_prompt(const Q38HttpChatRequest *request,
                                     const Q38Options *options,
                                     char *error, size_t error_capacity)
 {
-    if (strcmp(request->messages[request->message_count - 1u].role,
-               "user") != 0) {
-        snprintf(error, error_capacity, "the final message must have role user");
-        return NULL;
-    }
-    Q38Buffer prompt;
-    q38_buffer_init(&prompt);
-    int ok = 1;
-    if (options->system && *options->system)
-        ok = q38_chat_append_message(&prompt, "system", options->system);
-    for (size_t i = 0; ok && i < request->message_count; ++i)
-        ok = q38_chat_append_message(&prompt, request->messages[i].role,
-                                     request->messages[i].content);
-    if (ok) ok = q38_buffer_append_string(&prompt, "<|im_start|>assistant\n");
-    if (ok) ok = q38_buffer_append_string(
-        &prompt, options->thinking ? "<think>\n" : "<think>\n\n</think>\n\n");
-    if (!ok) {
-        q38_buffer_free(&prompt);
-        snprintf(error, error_capacity, "out of memory rendering messages");
-        return NULL;
-    }
-    return prompt.data;
+    return q38_http_render_messages(request, options->system,
+                                    options->thinking,
+                                    error, error_capacity);
 }
 
 static void q38_sampler_reset(Q38Sampler *sampler, uint8_t *presence,
@@ -847,6 +819,12 @@ typedef struct {
     long long created;
     int include_usage;
     Q38Utf8Stream utf8;
+    pthread_t heartbeat_thread;
+    pthread_mutex_t heartbeat_mutex;
+    pthread_cond_t heartbeat_cond;
+    int heartbeat_started;
+    int heartbeat_stop;
+    int heartbeat_failed;
 } Q38HttpStream;
 
 static int q38_http_stream_headers(int client)
@@ -870,6 +848,63 @@ static int q38_http_stream_send(Q38HttpStream *stream, Q38Buffer *event)
                                        event->data, event->length);
     q38_buffer_free(event);
     return ok;
+}
+
+static void *q38_http_heartbeat_main(void *context)
+{
+    Q38HttpStream *stream = (Q38HttpStream *)context;
+    static const char heartbeat[] = ": keep-alive\n\n";
+    pthread_mutex_lock(&stream->heartbeat_mutex);
+    while (!stream->heartbeat_stop) {
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_sec += 10;
+        const int waited = pthread_cond_timedwait(
+            &stream->heartbeat_cond, &stream->heartbeat_mutex, &deadline);
+        if (stream->heartbeat_stop) break;
+        if (waited != ETIMEDOUT) continue;
+        pthread_mutex_unlock(&stream->heartbeat_mutex);
+        const int ok = q38_socket_send_all(
+            stream->client, heartbeat, sizeof(heartbeat) - 1u);
+        pthread_mutex_lock(&stream->heartbeat_mutex);
+        if (!ok) {
+            stream->heartbeat_failed = 1;
+            stream->heartbeat_stop = 1;
+        }
+    }
+    pthread_mutex_unlock(&stream->heartbeat_mutex);
+    return NULL;
+}
+
+static int q38_http_heartbeat_start(Q38HttpStream *stream)
+{
+    if (pthread_mutex_init(&stream->heartbeat_mutex, NULL) != 0) return 0;
+    if (pthread_cond_init(&stream->heartbeat_cond, NULL) != 0) {
+        pthread_mutex_destroy(&stream->heartbeat_mutex);
+        return 0;
+    }
+    if (pthread_create(&stream->heartbeat_thread, NULL,
+                       q38_http_heartbeat_main, stream) != 0) {
+        pthread_cond_destroy(&stream->heartbeat_cond);
+        pthread_mutex_destroy(&stream->heartbeat_mutex);
+        return 0;
+    }
+    stream->heartbeat_started = 1;
+    return 1;
+}
+
+static int q38_http_heartbeat_finish(Q38HttpStream *stream)
+{
+    if (!stream->heartbeat_started) return 1;
+    pthread_mutex_lock(&stream->heartbeat_mutex);
+    stream->heartbeat_stop = 1;
+    pthread_cond_signal(&stream->heartbeat_cond);
+    pthread_mutex_unlock(&stream->heartbeat_mutex);
+    pthread_join(stream->heartbeat_thread, NULL);
+    pthread_cond_destroy(&stream->heartbeat_cond);
+    pthread_mutex_destroy(&stream->heartbeat_mutex);
+    stream->heartbeat_started = 0;
+    return !stream->heartbeat_failed;
 }
 
 static int q38_http_stream_role(Q38HttpStream *stream)
@@ -972,6 +1007,141 @@ static int q38_http_stream_error(Q38HttpStream *stream, const char *message)
     return q38_socket_send_all(stream->client, done, sizeof(done) - 1u);
 }
 
+static int q38_has_visible_text(const char *text)
+{
+    while (text && *text) {
+        if (!isspace((unsigned char)*text)) return 1;
+        ++text;
+    }
+    return 0;
+}
+
+static int q38_http_stream_tool_call(Q38HttpStream *stream,
+                                     const Q38ParsedToolCall *call,
+                                     size_t index)
+{
+    Q38Buffer event;
+    q38_buffer_init(&event);
+    int ok = q38_buffer_printf(
+        &event,
+        "data: {\"id\":\"%s\",\"object\":\"chat.completion.chunk\","
+        "\"created\":%lld,\"model\":\"qwen3.8-27b-in-c\","
+        "\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{"
+        "\"index\":%zu,\"id\":\"call-%s-%zu\",\"type\":\"function\","
+        "\"function\":{\"name\":",
+        stream->id, stream->created, index, stream->id, index);
+    if (ok) ok = q38_buffer_append_json_string(
+        &event, call->name, strlen(call->name));
+    if (ok) ok = q38_buffer_append_string(&event, ",\"arguments\":");
+    if (ok) ok = q38_buffer_append_json_string(
+        &event, call->arguments, strlen(call->arguments));
+    if (ok) ok = q38_buffer_printf(
+        &event, "}}]},\"finish_reason\":null}]%s}",
+        stream->include_usage ? ",\"usage\":null" : "");
+    if (!ok) {
+        q38_buffer_free(&event);
+        return 0;
+    }
+    return q38_http_stream_send(stream, &event);
+}
+
+static int q38_http_stream_tool_finish(Q38HttpStream *stream,
+                                       const Q38ToolResult *parsed,
+                                       const Q38GenerationStats *stats)
+{
+    if (q38_has_visible_text(parsed->content) &&
+        !q38_http_stream_content(stream, parsed->content,
+                                 strlen(parsed->content))) return 0;
+    for (size_t i = 0; i < parsed->call_count; ++i)
+        if (!q38_http_stream_tool_call(stream, &parsed->calls[i], i)) return 0;
+    Q38Buffer event;
+    q38_buffer_init(&event);
+    int ok = q38_buffer_printf(
+        &event,
+        "data: {\"id\":\"%s\",\"object\":\"chat.completion.chunk\","
+        "\"created\":%lld,\"model\":\"qwen3.8-27b-in-c\","
+        "\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"%s\"}]%s}",
+        stream->id, stream->created,
+        parsed->call_count ? "tool_calls" : stats->truncated ? "length" : "stop",
+        stream->include_usage ? ",\"usage\":null" : "");
+    if (!ok) {
+        q38_buffer_free(&event);
+        return 0;
+    }
+    if (!q38_http_stream_send(stream, &event)) return 0;
+    if (stream->include_usage) {
+        q38_buffer_init(&event);
+        ok = q38_buffer_printf(
+            &event,
+            "data: {\"id\":\"%s\",\"object\":\"chat.completion.chunk\","
+            "\"created\":%lld,\"model\":\"qwen3.8-27b-in-c\","
+            "\"choices\":[],\"usage\":{\"prompt_tokens\":%d,"
+            "\"completion_tokens\":%u,\"total_tokens\":%u}}",
+            stream->id, stream->created, stats->prompt_tokens,
+            stats->completion_tokens,
+            (unsigned)(stats->prompt_tokens + (int)stats->completion_tokens));
+        if (!ok) {
+            q38_buffer_free(&event);
+            return 0;
+        }
+        if (!q38_http_stream_send(stream, &event)) return 0;
+    }
+    static const char done[] = "data: [DONE]\n\n";
+    return q38_socket_send_all(stream->client, done, sizeof(done) - 1u);
+}
+
+static int q38_http_nonstream_tool_finish(
+    int client, const char *completion_id, long long created,
+    const Q38ToolResult *parsed, const Q38GenerationStats *stats)
+{
+    Q38Buffer response;
+    q38_buffer_init(&response);
+    int ok = q38_buffer_printf(
+        &response,
+        "{\"id\":\"%s\",\"object\":\"chat.completion\","
+        "\"created\":%lld,\"model\":\"qwen3.8-27b-in-c\","
+        "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
+        "\"content\":",
+        completion_id, created);
+    if (ok && q38_has_visible_text(parsed->content))
+        ok = q38_buffer_append_json_string(
+            &response, parsed->content, strlen(parsed->content));
+    else if (ok)
+        ok = q38_buffer_append_string(&response, "null");
+    if (ok && parsed->call_count)
+        ok = q38_buffer_append_string(&response, ",\"tool_calls\":[");
+    for (size_t i = 0; ok && i < parsed->call_count; ++i) {
+        if (i) ok = q38_buffer_append_string(&response, ",");
+        if (ok) ok = q38_buffer_printf(
+            &response,
+            "{\"id\":\"call-%s-%zu\",\"type\":\"function\","
+            "\"function\":{\"name\":",
+            completion_id, i);
+        if (ok) ok = q38_buffer_append_json_string(
+            &response, parsed->calls[i].name,
+            strlen(parsed->calls[i].name));
+        if (ok) ok = q38_buffer_append_string(&response, ",\"arguments\":");
+        if (ok) ok = q38_buffer_append_json_string(
+            &response, parsed->calls[i].arguments,
+            strlen(parsed->calls[i].arguments));
+        if (ok) ok = q38_buffer_append_string(&response, "}}");
+    }
+    if (ok && parsed->call_count)
+        ok = q38_buffer_append_string(&response, "]");
+    if (ok) ok = q38_buffer_printf(
+        &response,
+        "},\"finish_reason\":\"%s\"}],\"usage\":{\"prompt_tokens\":%d,"
+        "\"completion_tokens\":%u,\"total_tokens\":%u}}",
+        parsed->call_count ? "tool_calls" : stats->truncated ? "length" : "stop",
+        stats->prompt_tokens, stats->completion_tokens,
+        (unsigned)(stats->prompt_tokens + (int)stats->completion_tokens));
+    if (ok) ok = q38_http_response(client, 200, "OK",
+                                    "application/json; charset=utf-8",
+                                    response.data, response.length);
+    q38_buffer_free(&response);
+    return ok;
+}
+
 static int q38_http_chat(int client, Q38Model *model,
                           Q38Tokenizer *tokenizer, Q38Sampler *sampler,
                           uint8_t *presence, uint32_t vocabulary_size,
@@ -1028,20 +1198,24 @@ static int q38_http_chat(int client, Q38Model *model,
     Q38HttpStream stream;
     memset(&stream, 0, sizeof(stream));
     Q38Output output = {q38_http_buffer_write, &answer, 1};
+    const int tools_enabled = request.tool_count && !request.tool_choice_none;
     if (request.stream) {
         stream.client = client;
         stream.created = (long long)created;
         stream.include_usage = request.include_usage;
         snprintf(stream.id, sizeof(stream.id), "%s", completion_id);
         q38_utf8_stream_init(&stream.utf8, q38_http_stream_content, &stream);
-        if (!q38_http_stream_headers(client) || !q38_http_stream_role(&stream)) {
+        if (!q38_http_stream_headers(client) || !q38_http_stream_role(&stream) ||
+            (tools_enabled && !q38_http_heartbeat_start(&stream))) {
             q38_utf8_stream_free(&stream.utf8);
             free(prompt);
             q38_http_chat_request_free(&request);
             return 0;
         }
-        output.write = q38_utf8_stream_write;
-        output.context = &stream.utf8;
+        if (!tools_enabled) {
+            output.write = q38_utf8_stream_write;
+            output.context = &stream.utf8;
+        }
         output.append_final_newline = 0;
     }
     Q38GenerationStats stats = {0};
@@ -1050,8 +1224,10 @@ static int q38_http_chat(int client, Q38Model *model,
         NULL, &output, &stats);
     free(prompt);
     const int streaming = request.stream;
-    q38_http_chat_request_free(&request);
+    const int heartbeat_ok = !streaming || !tools_enabled ||
+                             q38_http_heartbeat_finish(&stream);
     if (!generated) {
+        q38_http_chat_request_free(&request);
         q38_buffer_free(&answer);
         if (streaming) {
             const int sent = q38_http_stream_error(
@@ -1062,6 +1238,38 @@ static int q38_http_chat(int client, Q38Model *model,
         return q38_http_error_response(client, 500, "Internal Server Error",
                                         "model generation failed");
     }
+    if (!heartbeat_ok) {
+        q38_http_chat_request_free(&request);
+        q38_buffer_free(&answer);
+        q38_utf8_stream_free(&stream.utf8);
+        return 0;
+    }
+    if (tools_enabled) {
+        Q38ToolResult parsed;
+        if (!q38_tool_parse(answer.data ? answer.data : "", answer.length,
+                            request.tools, request.tool_count, &parsed,
+                            error, sizeof(error))) {
+            q38_http_chat_request_free(&request);
+            q38_buffer_free(&answer);
+            if (streaming) {
+                const int sent = q38_http_stream_error(&stream, error);
+                q38_utf8_stream_free(&stream.utf8);
+                return sent;
+            }
+            return q38_http_error_response(client, 500,
+                                            "Internal Server Error", error);
+        }
+        q38_http_chat_request_free(&request);
+        q38_buffer_free(&answer);
+        const int sent = streaming
+            ? q38_http_stream_tool_finish(&stream, &parsed, &stats)
+            : q38_http_nonstream_tool_finish(
+                client, completion_id, (long long)created, &parsed, &stats);
+        q38_tool_result_free(&parsed);
+        if (streaming) q38_utf8_stream_free(&stream.utf8);
+        return sent;
+    }
+    q38_http_chat_request_free(&request);
     if (streaming) {
         const int sent = q38_http_stream_finish(&stream, &stats);
         q38_utf8_stream_free(&stream.utf8);

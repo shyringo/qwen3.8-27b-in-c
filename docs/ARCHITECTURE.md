@@ -114,6 +114,15 @@ before JSON encoding, so CJK text and emoji remain valid UTF-8. The server
 intentionally processes one request at a time because concurrent generation
 would multiply the model's runtime state and laptop memory requirement.
 
+Function definitions are rendered with the Qwen3.8 XML tool contract. Model
+output is parsed by a bounded native parser, checked against the declared tool
+set, and returned as OpenAI-compatible `tool_calls`. Parameter values are
+converted according to their JSON schema, including strings, numbers,
+booleans, arrays and objects. Tool-capable streaming requests are buffered
+until the XML transaction is complete so malformed calls cannot leak as user
+content; SSE comments keep the connection active while the model computes.
+The runtime never executes a tool itself.
+
 ## Split-checkpoint MTP verification
 
 The optional `--mtp-model` file contains the trained layer 64, shared

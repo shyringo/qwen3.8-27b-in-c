@@ -17,6 +17,12 @@ The native HTTP API uses `jsmn.h` from zserge/jsmn revision
 `25647e692c7906b96ffd2b05ca54c097948e879c` under the MIT License, included in
 `third_party/JSMN-LICENSE.txt`.
 
+The Qwen3.8 function-call wire format follows the model's official
+[`chat_template.jinja`](https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/chat_template.jinja).
+The XML parser, schema-aware argument conversion,
+history rendering, OpenAI response adaptation, and SSE lifecycle are native
+project code and do not embed an external tool parser.
+
 GGUF, the Q2_K through Q6_K and Q8_0/Q8_K encodings, and IQ tensor formats are
 compatibility formats published by the ggml and llama.cpp projects. The fixed
 IQ codebook tables in `third_party/ggml-common.h`, along with packed low-bit decoding and
