@@ -232,6 +232,12 @@ make portable
 模型哈希、oracle SHA、logits 对比、token ID 和测试范围见
 [推理准确性文档](docs/CORRECTNESS.md)。
 
+## 相关项目
+
+[qwen3.8-flash-next-in-c](https://github.com/shyringo/qwen3.8-flash-next-in-c)
+可以在单颗笔记本 CPU 上运行稀疏的 125B-A6B Qwen3.8-Flash-Next 和 51B PLE，
+提供原生 C 语言聊天与接近 10 token/s 的精确 batch 吞吐。
+
 ## 许可证与致谢
 
 启动脚本优先从 ModelScope 下载固定版本的

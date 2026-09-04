@@ -264,6 +264,13 @@ make portable
 The model hash, oracle SHA, logits comparison, token IDs, and test scope are in
 [Inference accuracy evidence](docs/CORRECTNESS.md).
 
+## Related project
+
+[qwen3.8-flash-next-in-c](https://github.com/shyringo/qwen3.8-flash-next-in-c)
+runs the sparse 125B-A6B Qwen3.8-Flash-Next architecture plus its 51B PLE on a
+single laptop CPU, with native C chat and exact batch throughput reaching near
+10 token/s on the reference machine.
+
 ## License and acknowledgements
 
 The launcher downloads pinned IQ1_M or Q4_K_M weights from
